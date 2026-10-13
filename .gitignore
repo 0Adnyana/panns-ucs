@@ -1,0 +1,12 @@
+# CNN14 weights (~327 MB); the script downloads them
+*.pth
+
+# cached embeddings and partial writes
+*.npz
+embeddings/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
