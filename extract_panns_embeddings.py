@@ -21,8 +21,10 @@ Usage (Windows, from the folder that holds this script):
   python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests"
 
 Paths: if the manifests have a path column (path / filepath / audio_path),
-it is used; relative paths are resolved against --audio-root (or the manifest
-folder). Without a path column, --audio-root is searched for each filename.
+it is used. Absolute paths are used as written. Relative paths (as written by
+prepare_envsound_ucs.py, e.g. FSD50K/FSD50K.dev_audio/123.wav) are resolved
+against --audio-root, or against the parent of the manifests folder (the data
+root). Without a path column, --audio-root is searched for each filename.
 Rows with exists = False/0 are skipped.
 
 Resumable: progress is saved every --save-every clips; just run it again.
@@ -153,14 +155,34 @@ def index_audio_root(root):
     return _file_index
 
 
+def path_bases(manifest_path, audio_root):
+    """Folders to try for a relative path column, most likely first."""
+    if audio_root:
+        return [Path(audio_root)]
+    # prepare_envsound_ucs.py writes paths relative to <data>/, and the CSVs
+    # live in <data>/manifests/. Also accept CSVs that sit next to the audio.
+    return [manifest_path.parent.parent, manifest_path.parent]
+
+
 def resolve_paths(df, manifest_path, audio_root):
     col = next((c for c in PATH_COLUMNS if c in df.columns), None)
-    base = Path(audio_root) if audio_root else manifest_path.parent
     if col:
-        out = []
-        for p in df[col].astype(str):
-            p = p.strip().replace("\\", os.sep) if os.sep == "/" else p.strip()
-            out.append(p if os.path.isabs(p) else str(base / p))
+        bases = path_bases(manifest_path, audio_root)
+        out, used = [], None
+        for raw in df[col].astype(str):
+            p = raw.strip()
+            if os.path.isabs(p):
+                out.append(os.path.normpath(p))
+                continue
+            found = ""
+            for base in bases:
+                cand = os.path.normpath(str(base / p))
+                if os.path.exists(cand):
+                    found, used = cand, used or base
+                    break
+            out.append(found or os.path.normpath(str(bases[0] / p)))
+        if used is not None:
+            print(f"  audio root: {used}")
         return out
     if not audio_root:
         sys.exit(f"{manifest_path.name} has no path column ({', '.join(PATH_COLUMNS)}); "
@@ -200,8 +222,8 @@ def run_split(split, model, device, args):
     df = df.reset_index(drop=True)
     if args.limit:
         df = df.head(args.limit)
-    paths = resolve_paths(df, manifest, args.audio_root)
     print(f"\n[{split}] {manifest}: {n_total:,} rows, {len(df):,} to embed")
+    paths = resolve_paths(df, manifest, args.audio_root)
 
     out_dir = Path(args.out)
     final = out_dir / f"envsound_{split}.npz"
@@ -253,7 +275,10 @@ def run_split(split, model, device, args):
     pd.DataFrame(failed, columns=["filename", "path", "error"]).to_csv(
         out_dir / f"envsound_{split}_failed.csv", index=False)
     X = np.asarray(emb, dtype=np.float32)
-    print(f"  saved {final}  X={X.shape}  failed={len(failed)}")
+    print(f"  saved {final}  X={tuple(np.load(final)['X'].shape)}  failed={len(failed)}")
+    if failed and not len(X):
+        fn, p, err = failed[0]
+        print(f"  first error: {err}  ({fn} -> {p})")
     if len(X) and (np.abs(X).sum(1) == 0).mean() > 0.01:
         print("  WARNING: >1% all-zero embeddings, check the audio (silent or unreadable files?)")
     return {"rows": n_total, "embedded": len(X), "failed": len(failed)}
@@ -262,7 +287,9 @@ def run_split(split, model, device, args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--manifests", required=True, help="folder with envsound_{train,val,test}.csv")
-    ap.add_argument("--audio-root", default="", help="base folder for relative paths, or to search by filename")
+    ap.add_argument("--audio-root", default="",
+                    help="base folder for relative paths (default: parent of the manifests folder), "
+                         "or the tree to search by filename")
     ap.add_argument("--out", default="embeddings/panns_cnn14")
     ap.add_argument("--checkpoint", default=str(DEFAULT_CKPT),
                     help="CNN14 weights (default: models/Cnn14_mAP=0.431.pth next to this script)")
