@@ -5,6 +5,9 @@
 *.npz
 embeddings/
 
+# probe training outputs (metrics, checkpoints, predictions)
+results/
+
 # Python
 __pycache__/
 *.py[cod]
