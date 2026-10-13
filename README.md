@@ -108,7 +108,7 @@ Reads the manifests, runs each clip through frozen CNN14, saves
 `embeddings/panns_cnn14/envsound_{train,val,test}.npz`.
 
 - Each `.npz` holds `X` (n_clips × 2048, float32) plus `filename`, `Category`,
-  `SubCategory`, `source`, in the same row order. ~475 MB total.
+  `SubCategory`, `source`, `path`, in the same row order. ~475 MB total.
 - Saves progress every 2,000 clips and resumes if rerun.
 - Failed clips go to `envsound_*_failed.csv` (should only be the known-missing
   AudioSet clips; anything else is a path problem).
@@ -116,14 +116,67 @@ Reads the manifests, runs each clip through frozen CNN14, saves
   import and crashes). The CNN14 model code is copied in; embeddings were checked
   to match the official model exactly.
 
+Run as a script (long, unattended, resumable), not in a notebook.
+
+#### How to run it
+
+From this repo folder, in PowerShell.
+
+**1. Install the packages** (once):
+
 ```powershell
-pip install torch torchlibrosa librosa soundfile pandas numpy
-python extract_panns_embeddings.py --manifests manifests --limit 50   # smoke test
-python extract_panns_embeddings.py --manifests manifests              # full run
-# options: --audio-root <dir> (if manifests have no path column), --checkpoint <path>, --out, --splits
+pip install -r requirements.txt
 ```
 
-Run as a script (long, unattended, resumable), not in a notebook.
+`requirements.txt` pins the CUDA 13.0 build of PyTorch (`2.14.1+cu130`).
+A plain `pip install torch` can install the `+cpu` wheel, and then
+`torch.cuda.is_available()` stays False. On CPU the full set (~58k clips)
+takes several hours.
+
+**2. Put the checkpoint in `models/`.** The script looks for
+`models/Cnn14_mAP=0.431.pth` next to itself (about 327 MB). That file is
+gitignored. If it is missing or smaller than ~300 MB, the script downloads it
+from Zenodo into that path on the first run. Pass `--checkpoint` only if the
+weights live somewhere else.
+
+**3. Smoke test** (first 50 rows of each split). Output goes to
+`embeddings/panns_cnn14/_smoke_50/`, not the real cache:
+
+```powershell
+python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests" --limit 50
+```
+
+You should see `Device: cuda` (or `cpu`), then one `saved ... X=(n, 2048)` line
+per split. A non-zero `failed` count on the smoke test usually means a path
+problem, not the known-missing AudioSet clips.
+
+**4. Full run:**
+
+```powershell
+python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests"
+```
+
+The manifests already have a `path` column, so `--audio-root` is not needed.
+Relative paths are resolved against the manifest folder. If a manifest has no
+path column (`path`, `filepath`, `file_path`, `audio_path`, or `abs_path`),
+pass `--audio-root` and the script searches that tree by filename. Rows with
+`exists` set to false are skipped.
+
+**5. What you get** under `embeddings/panns_cnn14/`:
+
+| File | Contents |
+|---|---|
+| `envsound_{train,val,test}.npz` | `X` plus `filename`, `Category`, `SubCategory`, `source`, `path` |
+| `envsound_{split}_failed.csv` | clips that could not be read |
+| `extract_info.json` | sample rate, embedding definition, and per-split counts |
+
+While a split is still running, progress sits in `envsound_{split}.partial.npz`.
+Stop the script and run the same command again to continue. `--restart` throws
+that partial file away and starts the split over. `--save-every` (default 2000)
+is how often the partial file is rewritten.
+
+Other flags: `--out` (default `embeddings/panns_cnn14`), `--splits`
+(default `train,val,test`), `--device` (`auto`, `cuda`, or `cpu`).
 
 ### Step 2 — Classifier training (next, not written yet)
 
@@ -203,7 +256,7 @@ instead of assigning tags.
   experiments, applied to the **train split only**.
 - **Call the frozen setup a "linear probe", not fine-tuning.**
 - Val is for early stopping only; test is touched once, at the end.
-- Use the 32 kHz `Cnn14_mAP=0.431.pth` checkpoint; reject other PANNs checkpoints.
+- Use the 32 kHz `Cnn14_mAP=0.431.pth` checkpoint in `models/`; reject other PANNs checkpoints.
 - Skip manifest rows with `exists = False`.
 - Keep `source` alongside every prediction so results can be split per dataset.
 - Long jobs (extraction, fine-tuning) are resumable scripts; analysis goes in notebooks.

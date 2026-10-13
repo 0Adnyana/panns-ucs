@@ -1,0 +1,10 @@
+# CUDA 13.0 build. A plain `pip install torch` can resolve the +cpu wheel,
+# which makes torch.cuda.is_available() False on the RTX 4060.
+--extra-index-url https://download.pytorch.org/whl/cu130
+
+torch==2.14.1+cu130
+torchlibrosa==0.1.0
+librosa==0.11.0
+soundfile==0.14.0
+pandas==2.3.3
+numpy==2.2.6

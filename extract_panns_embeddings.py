@@ -13,6 +13,9 @@ Output: <out>/envsound_{split}.npz with
         <out>/envsound_{split}_failed.csv   clips that could not be read
         <out>/extract_info.json             settings used (for your methods section)
 
+The checkpoint defaults to models/Cnn14_mAP=0.431.pth next to this script.
+If that file is missing or too small, it is downloaded there (~330 MB).
+
 Usage (Windows, from the folder that holds this script):
   python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests" --limit 50
   python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests"
@@ -24,7 +27,7 @@ Rows with exists = False/0 are skipped.
 
 Resumable: progress is saved every --save-every clips; just run it again.
 
-Requires: pip install torch torchlibrosa librosa soundfile pandas numpy
+Requires: pip install -r requirements.txt
 (The panns_inference package is not used: on Windows it tries to download
 files with wget at import time and crashes.)
 """
@@ -42,6 +45,7 @@ import pandas as pd
 SR = 32000                 # CNN14 was trained at 32 kHz
 MIN_SAMPLES = SR           # clips shorter than 1 s are zero-padded to 1 s
 CKPT_NAME = "Cnn14_mAP=0.431.pth"
+DEFAULT_CKPT = Path(__file__).resolve().parent / "models" / CKPT_NAME
 CKPT_URL = "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
 PATH_COLUMNS = ["path", "filepath", "file_path", "audio_path", "abs_path"]
 AUDIO_EXT = {".wav", ".flac", ".ogg", ".mp3", ".m4a", ".aiff", ".aif"}
@@ -260,7 +264,8 @@ def main():
     ap.add_argument("--manifests", required=True, help="folder with envsound_{train,val,test}.csv")
     ap.add_argument("--audio-root", default="", help="base folder for relative paths, or to search by filename")
     ap.add_argument("--out", default="embeddings/panns_cnn14")
-    ap.add_argument("--checkpoint", default=str(Path.home() / "panns_data" / CKPT_NAME))
+    ap.add_argument("--checkpoint", default=str(DEFAULT_CKPT),
+                    help="CNN14 weights (default: models/Cnn14_mAP=0.431.pth next to this script)")
     ap.add_argument("--splits", default="train,val,test")
     ap.add_argument("--device", default="auto", help="auto, cuda or cpu")
     ap.add_argument("--limit", type=int, default=0, help="only the first N rows per split (smoke test)")
