@@ -27,7 +27,7 @@ How to install, extract embeddings, and train the linear probe. Run both
 scripts from this repo folder in PowerShell. Extract once, then train on the
 cached files.
 
-**On this page:** [Install](#install) · [Checkpoint](#checkpoint) · [Extract](#extract) · [Train](#train)
+**On this page:** [Install](#install) · [Checkpoint](#checkpoint) · [Extract](#extract) · [Extract flags](#extract-flags) · [Train](#train) · [Train flags](#train-flags)
 
 <a id="install"></a>
 
@@ -57,8 +57,8 @@ checkpoint to use is in the [code conventions](docs/conventions.md#conventions).
 ### Extract embeddings
 
 `extract_panns_embeddings.py` reads the [manifests](docs/data.md#manifests), runs
-each clip through frozen CNN14, and saves
-`embeddings/panns_cnn14/envsound_{train,val,test}.npz`. Run it as a script
+each clip through frozen CNN14, and saves one `.npz` per split under `--out`
+(default `embeddings/panns_cnn14/`). Run it as a script
 (long, unattended, resumable). What the cache contains is under
 [embedding extraction](docs/method.md#extract-embeddings).
 
@@ -72,8 +72,9 @@ are skipped ([known data issues](docs/data.md#data-issues)).
 
 #### Smoke test
 
-First 50 rows of each split. Output goes to
-`embeddings/panns_cnn14/_smoke_50/`, separate from the real cache:
+First 50 rows of each split. Output is `<--out>/_smoke_50/` (default
+`embeddings/panns_cnn14/_smoke_50/`), so a smoke test stays out of a full run
+in the same folder:
 
 ```powershell
 python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests" --limit 50
@@ -97,7 +98,7 @@ python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manif
 
 #### Output
 
-Under `embeddings/panns_cnn14/`:
+Under `--out` (default `embeddings/panns_cnn14/`):
 
 | File | Contents |
 | --- | --- |
@@ -110,19 +111,38 @@ Stop the script and run the same command again to continue. `--restart` throws
 that partial file away and starts the split over. `--save-every` (default 2000)
 is how often the partial file is rewritten.
 
-Other flags: `--out` (default `embeddings/panns_cnn14`), `--splits`
-(default `train,val,test`), `--device` (`auto`, `cuda`, or `cpu`).
-
 `embeddings/` is gitignored.
+
+<a id="extract-flags"></a>
+
+#### Flags
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--manifests` | required | Folder with `envsound_{train,val,test}.csv`. |
+| `--audio-root` | parent of that folder | Base for relative paths, or the tree to search by filename when the manifest has no path column. |
+| `--out` | `embeddings/panns_cnn14` | Folder for this run. A new name starts a separate cache. The same name resumes it. |
+| `--checkpoint` | `models/Cnn14_mAP=0.431.pth` | CNN14 weights, next to the script. Downloaded there if missing. See [Checkpoint](#checkpoint). |
+| `--splits` | `train,val,test` | Comma-separated manifests to embed. |
+| `--device` | `auto` | `auto`, `cuda`, or `cpu`. |
+| `--limit` | `0` (every row) | First N rows of each split. Writes `<--out>/_smoke_<N>/`. |
+| `--save-every` | `2000` | Rewrite `envsound_{split}.partial.npz` every N new clips. |
+| `--restart` | off | Ignore the partial file and start the split over. |
+
+To keep two extractions apart, pass a different `--out`:
+
+```powershell
+python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests" --out embeddings/run_a
+```
 
 <a id="train"></a>
 
 ### Train the linear probe
 
-`train_linear_probe.py` loads the `.npz` files only (never audio or CNN14).
-It trains the paper's head with the [paper's settings](docs/method.md#paper-method).
-Runs take minutes, even on CPU. Output goes to
-`results/panns_cnn14_linear/<task>/`. That folder is gitignored, same as
+`train_linear_probe.py` loads the `.npz` files from `--embeddings` (never audio
+or CNN14). It trains the paper's head with the [paper's settings](docs/method.md#paper-method).
+Runs take minutes, even on CPU. Output goes to `--out/<task>/` (default
+`results/panns_cnn14_linear/<task>/`). That folder is gitignored, same as
 `embeddings/`. Metric definitions are under [linear probe](docs/method.md#linear-probe).
 
 Empty subcategories and shared subcategory names are covered in
@@ -155,8 +175,9 @@ python train_linear_probe.py --dry-run
 
 #### Smoke test
 
-First 200 labelled rows of each split, one seed, 5 epochs. Output goes to
-`results/panns_cnn14_linear/_smoke_200/subcategory/`, separate from the real run:
+First 200 labelled rows of each split, one seed, 5 epochs. Output is
+`<--out>/_smoke_200/<task>/` (default
+`results/panns_cnn14_linear/_smoke_200/subcategory/`):
 
 ```powershell
 python train_linear_probe.py --limit 200 --seeds 42 --max-epochs 5
@@ -181,7 +202,7 @@ python train_linear_probe.py --task pair
 
 #### Output
 
-Under `results/panns_cnn14_linear/<task>/`:
+Under `--out/<task>/` (default `results/panns_cnn14_linear/<task>/`):
 
 | File | Contents |
 | --- | --- |
@@ -196,10 +217,34 @@ Under `results/panns_cnn14_linear/<task>/`:
 | `seed_<n>/predictions.npz` | test logits, predictions, filename, source, path |
 | `seed_<n>/probe.pt` | best checkpoint, class list, parent map |
 
-Other flags: `--embeddings` (default `embeddings/panns_cnn14`), `--out`
-(default `results/panns_cnn14_linear`), `--device` (`auto`, `cuda`, or `cpu`),
-`--batch-size`, `--lr`, `--weight-decay`, `--dropout`, `--gamma`, `--patience`,
-`--max-epochs`, `--seeds`.
+<a id="train-flags"></a>
+
+#### Flags
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--embeddings` | `embeddings/panns_cnn14` | Folder of `envsound_{train,val,test}.npz` from the extractor. This is the `--out` of that run. |
+| `--out` | `results/panns_cnn14_linear` | Results folder. Files land in `<--out>/<task>/`. |
+| `--task` | `subcategory` | `subcategory`, `category`, or `pair`. See [Tasks](#tasks). |
+| `--seeds` | `42,123,456,789,1024` | Comma-separated seeds. A seed that already has `metrics.json` is skipped. |
+| `--device` | `auto` | `auto`, `cuda`, or `cpu`. |
+| `--batch-size` | `256` | |
+| `--lr` | `1e-3` | AdamW learning rate. |
+| `--weight-decay` | `1e-3` | AdamW weight decay. |
+| `--dropout` | `0.3` | Dropout before the linear layer. |
+| `--gamma` | `2` | Focal-loss gamma. |
+| `--patience` | `20` | Epochs without a better validation macro F1 before stopping. |
+| `--max-epochs` | `200` | Epoch budget. Cosine annealing runs over this budget. |
+| `--limit` | `0` (every labelled row) | First N labelled rows of each split. Writes `<--out>/_smoke_<N>/<task>/`. |
+| `--restart` | off | Retrain seeds that already have `metrics.json`. |
+| `--dry-run` | off | Print the label setup and exit. |
+
+Point `--embeddings` at an extraction folder and give the probe its own `--out`.
+This writes `results/run_a/subcategory/`:
+
+```powershell
+python train_linear_probe.py --embeddings embeddings/run_a --out results/run_a
+```
 
 The 5-seed EnvSound scores are in [Results](docs/results.md#results). What to check
 in those files is in [evaluation checks](docs/results.md#evaluation).
