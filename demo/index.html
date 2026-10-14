@@ -22,7 +22,7 @@
       font: 16px/1.45 "Segoe UI", sans-serif;
     }
     main {
-      max-width: 36rem;
+      max-width: 40rem;
       margin: 0 auto;
       padding: 3rem 1.25rem 4rem;
     }
@@ -35,6 +35,27 @@
     }
     h1 { margin: 0.2rem 0 0; font-size: 1.75rem; font-weight: 600; }
     .lede { margin: 0.75rem 0 0; color: var(--muted); }
+    .field { display: block; margin-top: 1.35rem; }
+    .field label {
+      display: block;
+      margin: 0 0 0.35rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    select {
+      width: 100%;
+      padding: 0.45rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+    }
+    select:focus { border-color: var(--mark); outline: none; }
+    select:disabled { opacity: 0.72; }
+    #embeddings { margin-top: 0.4rem; }
     .drop {
       display: flex;
       flex-direction: column;
@@ -98,6 +119,12 @@
     <h1>UCS tagger</h1>
     <p class="lede" id="lede">Drop a sound effect. The page plays it and predicts a UCS tag.</p>
 
+    <div class="field" id="checkpoint-field" hidden>
+      <label for="checkpoint">Checkpoint</label>
+      <select id="checkpoint"></select>
+    </div>
+    <p class="note" id="embeddings" hidden></p>
+
     <label class="drop" id="drop">
       <input id="file" type="file" accept="audio/*,.wav,.flac,.ogg,.mp3,.m4a,.aiff,.aif">
       <span class="drop-title">Drop a clip here</span>
@@ -130,6 +157,9 @@
   </main>
   <script>
     const lede = document.getElementById("lede");
+    const checkpointField = document.getElementById("checkpoint-field");
+    const checkpoint = document.getElementById("checkpoint");
+    const embeddings = document.getElementById("embeddings");
     const hint = document.getElementById("hint");
     const drop = document.getElementById("drop");
     const fileInput = document.getElementById("file");
@@ -151,6 +181,8 @@
     let busy = false;
     let objectUrl = "";
     let maxSeconds = 30;
+    let currentId = "";
+    let checkpointCount = 0;
 
     function tagOf(row) {
       return row.subcategory ? row.category + "-" + row.subcategory : row.category;
@@ -165,6 +197,7 @@
       busy = on;
       fileInput.disabled = on;
       randomBtn.disabled = on;
+      checkpoint.disabled = on || checkpointCount < 2;
     }
 
     function setStatus(text, isError) {
@@ -272,6 +305,7 @@
     }
 
     async function useFile(file) {
+      if (busy) return;
       out.hidden = false;
       meta.textContent = file.name;
       playFile(file);
@@ -315,7 +349,35 @@
       });
     });
 
-    fetch("/api/info").then(readInfo).then((info) => {
+    function checkpointLabel(row) {
+      const seed = row.seed == null ? "" : " · seed " + row.seed;
+      const score = row.f1 == null ? "" : " · F1 " + Number(row.f1).toFixed(3);
+      return row.run + " · " + row.task + seed + score;
+    }
+
+    function fillCheckpoints(list, current) {
+      checkpointCount = list.length;
+      checkpoint.replaceChildren();
+      let group = null;
+      let groupName = null;
+      list.forEach((row) => {
+        if (row.embeddings !== groupName) {
+          groupName = row.embeddings;
+          group = document.createElement("optgroup");
+          group.label = row.embeddings;
+          checkpoint.append(group);
+        }
+        const opt = document.createElement("option");
+        opt.value = row.id;
+        opt.textContent = checkpointLabel(row);
+        group.append(opt);
+      });
+      checkpoint.disabled = busy || list.length < 2;
+      if (current && list.some((row) => row.id === current)) checkpoint.value = current;
+      checkpointField.hidden = list.length === 0;
+    }
+
+    function applyInfo(info) {
       maxSeconds = info.max_seconds;
       const copy = {
         subcategory: "Drop a sound effect. The page plays it and predicts a UCS subcategory. The category comes from that prediction.",
@@ -327,7 +389,45 @@
         + info.max_seconds + " seconds are scored.";
       const seed = info.seed == null ? "" : " · seed " + info.seed;
       foot.textContent = "Linear probe · " + info.task + seed + " · " + info.n_classes + " classes · " + info.device;
+      embeddings.textContent = info.embeddings ? "Embeddings · " + info.embeddings : "";
+      embeddings.hidden = !info.embeddings;
+      fillCheckpoints(info.checkpoints || [], info.current);
       randomBtn.hidden = !info.library;
+    }
+
+    checkpoint.addEventListener("change", () => {
+      const id = checkpoint.value;
+      if (!id || id === currentId || busy) return;
+      const previous = currentId;
+      switchTo(id, previous);
+    });
+
+    async function switchTo(id, previous) {
+      setBusy(true);
+      clearResult();
+      setStatus("Loading checkpoint…", false);
+      try {
+        const res = await fetch("/api/checkpoint", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: id }),
+        });
+        const info = await readInfo(res);
+        currentId = info.current || id;
+        applyInfo(info);
+        setStatus("", false);
+      } catch (err) {
+        currentId = previous;
+        checkpoint.value = previous;
+        setStatus(err.message || "Could not load that checkpoint.", true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    fetch("/api/info").then(readInfo).then((info) => {
+      currentId = info.current || "";
+      applyInfo(info);
     }).catch(() => {
       setStatus("The page could not reach the tagger.", true);
     });
