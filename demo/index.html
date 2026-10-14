@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UCS tagger demo</title>
+  <style>
+    :root {
+      --bg: #f3f0e8;
+      --ink: #1b1914;
+      --muted: #6d675e;
+      --line: #d4cec3;
+      --paper: #fffdf8;
+      --mark: #1f4d3a;
+      --err: #8a2b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.45 "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 36rem;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }
+    .eyebrow {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0.2rem 0 0; font-size: 1.75rem; font-weight: 600; }
+    .lede { margin: 0.75rem 0 0; color: var(--muted); }
+    .drop {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.25rem;
+      min-height: 9rem;
+      margin-top: 1.5rem;
+      padding: 1.25rem;
+      border: 1px dashed #b7b0a4;
+      border-radius: 0.75rem;
+      background: var(--paper);
+      cursor: pointer;
+    }
+    .drop:focus-within, .drop.over { border-color: var(--mark); background: #f3f7f4; }
+    .drop input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+    .drop-title { font-size: 1.05rem; }
+    .drop-hint { color: var(--muted); font-size: 0.9rem; }
+    .actions { margin-top: 0.85rem; }
+    button {
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.4rem 0.9rem;
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--ink); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    #status { min-height: 1.4rem; margin: 0.9rem 0 0; }
+    #status.err { color: var(--err); }
+    audio { width: 100%; margin-top: 0.4rem; }
+    #meta { margin: 0.7rem 0 0; color: var(--muted); font-size: 0.92rem; }
+    .kicker {
+      margin: 1.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .tag { margin: 0.15rem 0 0; font-size: 1.7rem; font-weight: 600; word-break: break-word; }
+    .tag.small { font-size: 1.15rem; font-weight: 600; }
+    .pct { margin: 0.15rem 0 0; color: var(--mark); font-variant-numeric: tabular-nums; }
+    .note { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.92rem; }
+    ol { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+    li { margin: 0.65rem 0; }
+    .alt { display: flex; justify-content: space-between; gap: 1rem; }
+    .bar { display: block; height: 3px; margin-top: 0.28rem; background: #e4dfd6; }
+    .bar span { display: block; height: 100%; background: var(--mark); }
+    .foot { margin: 2rem 0 0; color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Demo</p>
+    <h1>UCS tagger</h1>
+    <p class="lede" id="lede">Drop a sound effect. The page plays it and predicts a UCS tag.</p>
+
+    <label class="drop" id="drop">
+      <input id="file" type="file" accept="audio/*,.wav,.flac,.ogg,.mp3,.m4a,.aiff,.aif">
+      <span class="drop-title">Drop a clip here</span>
+      <span class="drop-hint" id="hint">or click to choose a wav, flac, ogg, mp3, m4a, or aiff file.</span>
+    </label>
+    <div class="actions">
+      <button type="button" id="random" hidden>Play a test clip</button>
+    </div>
+    <p id="status" role="status"></p>
+
+    <section id="out" hidden>
+      <audio id="player" controls preload="auto"></audio>
+      <p id="meta"></p>
+      <div id="result" hidden>
+        <p class="kicker">Predicted</p>
+        <p id="pred" class="tag"></p>
+        <p id="pct" class="pct"></p>
+        <p id="note" class="note"></p>
+        <div id="labelled" hidden>
+          <p class="kicker">Labelled</p>
+          <p id="labelled-tag" class="tag small"></p>
+        </div>
+        <div id="alts-wrap" hidden>
+          <p class="kicker">Other tags</p>
+          <ol id="alts"></ol>
+        </div>
+      </div>
+    </section>
+    <p class="foot" id="foot"></p>
+  </main>
+  <script>
+    const lede = document.getElementById("lede");
+    const hint = document.getElementById("hint");
+    const drop = document.getElementById("drop");
+    const fileInput = document.getElementById("file");
+    const randomBtn = document.getElementById("random");
+    const status = document.getElementById("status");
+    const out = document.getElementById("out");
+    const player = document.getElementById("player");
+    const meta = document.getElementById("meta");
+    const result = document.getElementById("result");
+    const pred = document.getElementById("pred");
+    const pctEl = document.getElementById("pct");
+    const note = document.getElementById("note");
+    const labelled = document.getElementById("labelled");
+    const labelledTag = document.getElementById("labelled-tag");
+    const altsWrap = document.getElementById("alts-wrap");
+    const alts = document.getElementById("alts");
+    const foot = document.getElementById("foot");
+
+    let busy = false;
+    let objectUrl = "";
+    let maxSeconds = 30;
+
+    function tagOf(row) {
+      return row.subcategory ? row.category + "-" + row.subcategory : row.category;
+    }
+
+    function pct(p) {
+      const n = p * 100;
+      return (n >= 10 ? n.toFixed(0) : n.toFixed(1)) + "%";
+    }
+
+    function setBusy(on) {
+      busy = on;
+      fileInput.disabled = on;
+      randomBtn.disabled = on;
+    }
+
+    function setStatus(text, isError) {
+      status.textContent = text;
+      status.classList.toggle("err", Boolean(isError));
+    }
+
+    function clearResult() {
+      result.hidden = true;
+      pred.textContent = "";
+      pctEl.textContent = "";
+      note.textContent = "";
+      labelled.hidden = true;
+      altsWrap.hidden = true;
+      alts.replaceChildren();
+    }
+
+    function playFile(file) {
+      const url = URL.createObjectURL(file);
+      player.src = url;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = url;
+      player.play().catch(() => {});
+    }
+
+    function playClip(id) {
+      player.src = "/api/clip/" + id;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = "";
+      player.play().catch(() => {});
+    }
+
+    async function read(res) {
+      let data;
+      try {
+        data = await res.json();
+      } catch (err) {
+        throw new Error("The tagger returned an unreadable response.");
+      }
+      if (!res.ok) throw new Error(data.error || "Tagging failed.");
+      if (!data.predictions || !data.predictions[0]) throw new Error("The tagger returned no tags.");
+      return data;
+    }
+
+    function show(data) {
+      const top = data.predictions[0];
+      const bits = [data.name];
+      if (data.seconds != null) bits.push(Number(data.seconds).toFixed(1) + " s");
+      if (data.source) bits.push(data.source);
+      if (data.truncated) bits.push("first " + maxSeconds + " seconds scored");
+      meta.textContent = bits.join(" · ");
+      pred.textContent = tagOf(top);
+      pctEl.textContent = pct(top.prob);
+      if (data.labelled) {
+        labelled.hidden = false;
+        labelledTag.textContent = tagOf(data.labelled);
+        const same = data.task === "category"
+          ? data.labelled.category === top.category
+          : tagOf(data.labelled) === tagOf(top);
+        const noun = data.task === "category" ? "category" : "tag";
+        note.textContent = same
+          ? "Same " + noun + " as the label."
+          : "Different " + noun + " from the label.";
+      } else {
+        labelled.hidden = true;
+        note.textContent = "";
+      }
+      const rest = data.predictions.slice(1);
+      alts.replaceChildren();
+      rest.forEach((row) => {
+        const li = document.createElement("li");
+        const line = document.createElement("div");
+        line.className = "alt";
+        const name = document.createElement("span");
+        name.textContent = tagOf(row);
+        const score = document.createElement("span");
+        score.textContent = pct(row.prob);
+        line.append(name, score);
+        const bar = document.createElement("span");
+        bar.className = "bar";
+        const fill = document.createElement("span");
+        fill.style.width = Math.max(0, Math.min(100, row.prob * 100)) + "%";
+        bar.append(fill);
+        li.append(line, bar);
+        alts.append(li);
+      });
+      altsWrap.hidden = rest.length === 0;
+      result.hidden = false;
+      out.hidden = false;
+    }
+
+    async function run(work) {
+      if (busy) return;
+      setBusy(true);
+      clearResult();
+      setStatus("Tagging this clip…", false);
+      try {
+        show(await work());
+        setStatus("", false);
+      } catch (err) {
+        setStatus(err.message || "Tagging failed.", true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function useFile(file) {
+      out.hidden = false;
+      meta.textContent = file.name;
+      playFile(file);
+      await run(async () => {
+        const res = await fetch("/api/predict?name=" + encodeURIComponent(file.name), {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: file,
+        });
+        return read(res);
+      });
+    }
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (file) useFile(file);
+    });
+
+    ["dragenter", "dragover"].forEach((name) => {
+      drop.addEventListener(name, (event) => {
+        event.preventDefault();
+        drop.classList.add("over");
+      });
+    });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      drop.classList.remove("over");
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (file) useFile(file);
+    });
+    window.addEventListener("dragover", (event) => event.preventDefault());
+    window.addEventListener("drop", (event) => event.preventDefault());
+
+    randomBtn.addEventListener("click", () => {
+      run(async () => {
+        const data = await read(await fetch("/api/random"));
+        playClip(data.id);
+        return data;
+      });
+    });
+
+    fetch("/api/info").then(readInfo).then((info) => {
+      maxSeconds = info.max_seconds;
+      const copy = {
+        subcategory: "Drop a sound effect. The page plays it and predicts a UCS subcategory. The category comes from that prediction.",
+        pair: "Drop a sound effect. The page plays it and predicts a category and subcategory together.",
+        category: "Drop a sound effect. The page plays it and predicts a UCS category.",
+      };
+      lede.textContent = copy[info.task] || copy.subcategory;
+      hint.textContent = "or click to choose a wav, flac, ogg, mp3, m4a, or aiff file. The first "
+        + info.max_seconds + " seconds are scored.";
+      const seed = info.seed == null ? "" : " · seed " + info.seed;
+      foot.textContent = "Linear probe · " + info.task + seed + " · " + info.n_classes + " classes · " + info.device;
+      randomBtn.hidden = !info.library;
+    }).catch(() => {
+      setStatus("The page could not reach the tagger.", true);
+    });
+
+    async function readInfo(res) {
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "The tagger is not ready.");
+      return data;
+    }
+  </script>
+</body>
+</html>
