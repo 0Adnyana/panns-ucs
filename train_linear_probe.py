@@ -2,7 +2,7 @@
 Step 2 of the Beck & Lerch (2026) benchmark: a linear probe on frozen CNN14 embeddings.
 
 The paper does not fine-tune PANNs. This script never loads audio or the CNN14
-checkpoint. It reads the cached 2048-d embeddings and trains:
+checkpoint. It reads the cached 2048-d embeddings (embeddings.npz) and trains:
 
     Dropout(0.3) -> Linear(2048, n_classes)
 
@@ -27,13 +27,17 @@ Label schemes (--task):
   category      keep every clip; class = Category (59 classes). This is the
                 paper's direct category classifier.
 
-Usage (from this folder):
+Labels and splits come from the manifests (--manifests), not from the cache.
+Each manifest row (exists not false) is matched to embeddings.npz on
+filename + source. A missing vector or a repeated pair stops the run.
 
-  python train_linear_probe.py --dry-run
-  python train_linear_probe.py
-  python train_linear_probe.py --task category
-  python train_linear_probe.py --task pair
-  python train_linear_probe.py --limit 200 --seeds 42 --max-epochs 5
+Usage (from this folder, M = the manifests folder):
+
+  python train_linear_probe.py --manifests M --dry-run
+  python train_linear_probe.py --manifests M
+  python train_linear_probe.py --manifests M --task category
+  python train_linear_probe.py --manifests M --task pair
+  python train_linear_probe.py --manifests M --limit 200 --seeds 42 --max-epochs 5
 """
 import argparse
 import json
@@ -95,27 +99,94 @@ def json_ready(value):
     return value
 
 
-def load_embeddings(emb_dir):
+def truthy(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "t"}
+
+
+def find_manifest(folder, split):
+    for name in (f"envsound_{split}.csv", f"envsound/envsound_{split}.csv", f"{split}.csv"):
+        path = Path(folder) / name
+        if path.is_file():
+            return path
+    sys.exit(f"No manifest for '{split}' in {folder} (looked for envsound_{split}.csv)")
+
+
+def read_manifest(folder, split):
+    path = find_manifest(folder, split)
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    for col in ("filename", "source", "Category"):
+        if col not in df.columns:
+            sys.exit(f"{path} has no '{col}' column. Columns: {list(df.columns)}")
+    df["csv_line"] = np.arange(len(df)) + 2
+    if "exists" in df.columns:
+        df = df[df["exists"].map(truthy)]
+    df = df.reset_index(drop=True)
+    for col in ("filename", "source", "Category", "SubCategory", "path"):
+        df[col] = df[col].str.strip() if col in df.columns else ""
+    return path, df
+
+
+def load_embeddings(emb_dir, manifests_dir):
+    """Join the manifests onto embeddings.npz on filename + source."""
+    path = Path(emb_dir) / "embeddings.npz"
+    if not path.is_file():
+        sys.exit(f"Missing {path}. Run extract_panns_embeddings.py first "
+                 "(or --combine-from on a folder of old per-split caches).")
+    with np.load(path, allow_pickle=True) as z:
+        X = np.asarray(z["X"], dtype=np.float32)
+        cache_fn = [str(v).strip() for v in z["filename"]]
+        cache_src = [str(v).strip() for v in z["source"]]
+    if X.ndim != 2 or X.shape[1] != EMB_DIM or len(X) != len(cache_fn):
+        sys.exit(f"{path} has X shape {tuple(X.shape)} for {len(cache_fn)} filenames; "
+                 f"expected (N, {EMB_DIM})")
+    if not np.isfinite(X).all():
+        sys.exit(f"{path} contains NaN or inf embeddings")
+    row_of = {}
+    for i, key in enumerate(zip(cache_fn, cache_src)):
+        if key in row_of:
+            sys.exit(f"{path} holds filename {key[0]!r} source {key[1]!r} twice")
+        row_of[key] = i
+    print(f"  cache {path}  X={tuple(X.shape)}", flush=True)
+
+    frames = {split: read_manifest(manifests_dir, split) for split in ("train", "val", "test")}
+
+    seen = defaultdict(list)
+    for split, (csv_path, df) in frames.items():
+        for fn, src, line in zip(df["filename"], df["source"], df["csv_line"]):
+            seen[(fn, src)].append(f"{csv_path.name} line {line}")
+    repeated = {key: where for key, where in seen.items() if len(where) > 1}
+    if repeated:
+        lines = [f"  {fn!r} source {src!r}: " + ", ".join(where)
+                 for (fn, src), where in list(repeated.items())[:10]]
+        sys.exit(f"{len(repeated)} filename + source pair(s) appear more than once in the manifests:\n"
+                 + "\n".join(lines))
+
+    missing = [(csv_path.name, line, fn, src)
+               for csv_path, df in frames.values()
+               for fn, src, line in zip(df["filename"], df["source"], df["csv_line"])
+               if (fn, src) not in row_of]
+    if missing:
+        lines = [f"  {name} line {line}: {fn!r} source {src!r}" for name, line, fn, src in missing[:10]]
+        sys.exit(f"{len(missing)} manifest row(s) have no embedding in {path}:\n" + "\n".join(lines)
+                 + "\nRe-run the extractor on these manifests, or drop the rows (exists=false).")
+
+    cache_fn = np.array(cache_fn, dtype=str)
+    cache_src = np.array(cache_src, dtype=str)
     splits = {}
-    for split in ("train", "val", "test"):
-        path = Path(emb_dir) / f"envsound_{split}.npz"
-        if not path.is_file():
-            sys.exit(f"Missing {path}. Run extract_panns_embeddings.py first.")
-        with np.load(path, allow_pickle=True) as z:
-            X = np.asarray(z["X"], dtype=np.float32)
-            if X.ndim != 2 or X.shape[1] != EMB_DIM:
-                sys.exit(f"{path} has X shape {tuple(X.shape)}; expected (N, {EMB_DIM})")
-            if not np.isfinite(X).all():
-                sys.exit(f"{path} contains NaN or inf embeddings")
-            splits[split] = {
-                "X": X,
-                "filename": np.array([str(v).strip() for v in z["filename"]]),
-                "category": np.array([str(v).strip() for v in z["Category"]]),
-                "subcategory": np.array([str(v).strip() for v in z["SubCategory"]]),
-                "source": np.array([str(v).strip() for v in z["source"]]),
-                "path": np.array([str(v).strip() for v in z["path"]]),
-            }
-        print(f"  loaded {split:5}  X={tuple(splits[split]['X'].shape)}", flush=True)
+    for split, (csv_path, df) in frames.items():
+        idx = np.array([row_of[key] for key in zip(df["filename"], df["source"])], dtype=np.int64)
+        splits[split] = {
+            "X": X[idx],
+            "filename": cache_fn[idx],
+            "category": df["Category"].to_numpy(dtype=str),
+            "subcategory": df["SubCategory"].to_numpy(dtype=str),
+            "source": cache_src[idx],
+            "path": df["path"].to_numpy(dtype=str),
+        }
+        print(f"  joined {split:5}  {csv_path}  X={tuple(splits[split]['X'].shape)}", flush=True)
+    unused = len(row_of) - len(seen)
+    if unused:
+        print(f"  {unused} cache row(s) are not in any manifest (not used)", flush=True)
     return splits
 
 
@@ -537,6 +608,7 @@ def write_summary(data, records, out_dir, args, device):
         ),
         "settings": {
             "embeddings": args.embeddings,
+            "manifests": args.manifests,
             "dropout": args.dropout,
             "optimizer": "AdamW",
             "lr": args.lr,
@@ -637,7 +709,10 @@ def describe(data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--embeddings", default="embeddings/panns_cnn14")
+    parser.add_argument("--embeddings", default="embeddings/panns_cnn14",
+                        help="folder holding embeddings.npz from the extractor")
+    parser.add_argument("--manifests", required=True,
+                        help="folder with envsound_{train,val,test}.csv; labels and splits come from here")
     parser.add_argument("--out", default="results/panns_cnn14_linear")
     parser.add_argument("--task", choices=("subcategory", "category", "pair"), default="subcategory")
     parser.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
@@ -668,7 +743,7 @@ def main():
         sys.exit("pass at least one seed")
 
     print(f"Device: {device}", flush=True)
-    raw = load_embeddings(args.embeddings)
+    raw = load_embeddings(args.embeddings, args.manifests)
     data = prepare(raw, args.task, args.limit)
     del raw
     describe(data)

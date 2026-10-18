@@ -65,8 +65,17 @@ is reproduced. Scores from this repo are in [Results](results.md#results).
 ## Pipeline
 
 ```
-audio ──► frozen CNN14 ──► 2048-d embedding (.npz, cached) ──► dropout + linear head ──► SubCategory ──► Category
+audio ──► frozen CNN14 ──► embeddings.npz (X, filename, source)
+                                   │
+manifests (train/val/test CSV) ──► join on filename + source ──► dropout + linear head ──► SubCategory ──► Category
 ```
+
+The embedding depends only on the audio and the frozen CNN14. The UCS labels
+and the split each clip belongs to depend on the labeling method. So the cache
+holds no labels, and the probe reads labels and splits from the manifests.
+A new label set is a new `--manifests` folder and a new probe `--out`, with the
+same `--embeddings`. Nothing is re-extracted, as long as every clip in the new
+manifests is already in the cache.
 
 How to run both steps is in [Getting started](../README.md#getting-started).
 
@@ -74,9 +83,21 @@ How to run both steps is in [Getting started](../README.md#getting-started).
 
 ### Embedding extraction
 
-`extract_panns_embeddings.py` writes one `.npz` per split. Each file holds
-`X` (n_clips × 2048, float32) plus `filename`, `Category`, `SubCategory`,
-`source`, and `path`, in the same row order. About 475 MB total.
+`extract_panns_embeddings.py` writes one `embeddings.npz` for all splits. It
+holds `X` (n_clips × 2048, float32) plus `filename` and `source`, in the same
+row order. `source` is the dataset the clip came from (AudioSet, FSD50K,
+ESC-50), not a UCS label. The lookup key is `filename` plus `source`, so two
+datasets can use the same clip name. A clip that is in more than one split is
+stored once. `Category`, `SubCategory`, and `path` are not stored. About 475 MB
+total.
+
+The extractor reads the manifests only to learn which files to embed. If the
+same `filename` and `source` point at two different files, it stops and prints
+both paths.
+
+Caches written before this layout have one `envsound_{split}.npz` per split,
+with labels inside. `--combine-from` stacks them into one `embeddings.npz`
+without CNN14.
 
 The script does not use the `panns_inference` package. On Windows that package
 calls `wget` on import and crashes. The CNN14 model code is copied in;
@@ -86,7 +107,13 @@ embeddings were checked to match the official model exactly.
 
 ### Linear probe
 
-`train_linear_probe.py` reads only the cached `.npz` files.
+`train_linear_probe.py` reads `embeddings.npz` and the three manifests. It
+never opens audio. For each manifest row whose `exists` is not false, it looks
+up `filename` plus `source` in the cache. Labels, splits, and row order come
+from the manifest. If any row has no vector, or the same pair appears twice in
+one manifest or in more than one split, it stops and prints the rows. Cache rows
+that no manifest uses are counted and ignored. `summary.json` records both
+`settings.embeddings` and `settings.manifests`.
 
 Macro F1 is the mean of per-class F1 over classes with at least one true sample
 in the scored split. `macro_f1_all_train_classes` scores a missing class as 0.

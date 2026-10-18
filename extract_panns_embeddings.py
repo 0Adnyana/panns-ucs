@@ -4,12 +4,16 @@ Step 1 of the Beck & Lerch (2026) benchmark: frozen PANNs CNN14 embeddings.
 The paper does not fine-tune PANNs. It runs every clip through the pretrained
 CNN14 (AudioSet, Cnn14_mAP=0.431), keeps the 2048-d embedding, and trains a
 dropout(0.3) + linear classifier on those vectors. This script does the first
-half: one embedding per clip, saved per split.
+half: one embedding per clip, in a single cache for every split.
 
-Input : manifests/envsound_{train,val,test}.csv  (your manifests)
-Output: <out>/envsound_{split}.npz with
+The cache holds no labels. Labels come from the manifests at training time
+(train_linear_probe.py --manifests), so a new label set reuses this cache.
+
+Input : manifests/envsound_{train,val,test}.csv  (only filename, source, path,
+        exists are read; they say which clips to embed)
+Output: <out>/embeddings.npz with
           X           float32 (N, 2048)
-          filename, Category, SubCategory, source, path   (str arrays)
+          filename, source   (str arrays; the pair is the lookup key)
         <out>/envsound_{split}_failed.csv   clips that could not be read
         <out>/extract_info.json             settings used (for your methods section)
 
@@ -28,6 +32,10 @@ root). Without a path column, --audio-root is searched for each filename.
 Rows with exists = False/0 are skipped.
 
 Resumable: progress is saved every --save-every clips; just run it again.
+
+Old per-split caches (envsound_{train,val,test}.npz) become one embeddings.npz
+without CNN14:
+  python extract_panns_embeddings.py --combine-from embeddings/panns_cnn14
 
 Requires: pip install -r requirements.txt
 (The panns_inference package is not used: on Windows it tries to download
@@ -202,18 +210,38 @@ def load_audio(path):
     return wav.astype(np.float32)
 
 
-def save_npz(path, emb, meta):
+def save_npz(path, emb, filenames, sources):
     tmp = str(path) + ".tmp.npz"
     np.savez(tmp, X=np.asarray(emb, dtype=np.float32).reshape(-1, 2048),
-             **{k: np.asarray(v, dtype=str) for k, v in meta.items()})
+             filename=np.asarray(filenames, dtype=str), source=np.asarray(sources, dtype=str))
     os.replace(tmp, path)
 
 
-def run_split(split, model, device, args):
-    import torch
+def same_path(a, b):
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def check_paths(rows):
+    """rows: (filename, source, path, where). Exit if one key points at two files."""
+    first = {}
+    clashes = []
+    for fn, src, p, where in rows:
+        key = (fn, src)
+        if key not in first:
+            first[key] = (p, where)
+        elif not same_path(first[key][0], p):
+            clashes.append((key, first[key], (p, where)))
+    if clashes:
+        lines = [f"  {fn!r} source {src!r}:\n    {p1}  ({w1})\n    {p2}  ({w2})"
+                 for (fn, src), (p1, w1), (p2, w2) in clashes[:10]]
+        sys.exit(f"{len(clashes)} filename + source pair(s) point at two different files:\n"
+                 + "\n".join(lines))
+
+
+def read_split(split, args):
     manifest = find_manifest(args.manifests, split)
     df = pd.read_csv(manifest, dtype=str, keep_default_na=False)
-    for c in ("filename", "Category"):
+    for c in ("filename", "source"):
         if c not in df.columns:
             sys.exit(f"{manifest} has no '{c}' column. Columns: {list(df.columns)}")
     n_total = len(df)
@@ -222,71 +250,144 @@ def run_split(split, model, device, args):
     df = df.reset_index(drop=True)
     if args.limit:
         df = df.head(args.limit)
-    print(f"\n[{split}] {manifest}: {n_total:,} rows, {len(df):,} to embed")
-    paths = resolve_paths(df, manifest, args.audio_root)
+    print(f"[{split}] {manifest}: {n_total:,} rows, {len(df):,} to embed")
+    df["filename"] = df["filename"].str.strip()
+    df["source"] = df["source"].str.strip()
+    df["resolved_path"] = resolve_paths(df, manifest, args.audio_root)
+    return df, n_total
+
+
+def extract(splits, model, device, args):
+    import torch
+    frames = {}
+    for split in splits:
+        frames[split] = read_split(split, args)
+    check_paths((r.filename, r.source, r.resolved_path, f"{split} manifest")
+                for split, (df, _) in frames.items() for r in df.itertuples())
 
     out_dir = Path(args.out)
-    final = out_dir / f"envsound_{split}.npz"
-    partial = out_dir / f"envsound_{split}.partial.npz"
-    keys = ["filename", "Category", "SubCategory", "source", "path"]
-    meta = {k: [] for k in keys}
-    emb = []
+    final = out_dir / "embeddings.npz"
+    partial = out_dir / "embeddings.partial.npz"
+    emb, filenames, sources = [], [], []
     if partial.exists() and not args.restart:
-        z = np.load(partial)
-        emb = list(z["X"])
-        meta = {k: list(z[k]) for k in keys}
-        print(f"  resuming: {len(emb):,} already done")
-    done = set(meta["filename"])
-    failed = []
+        with np.load(partial) as z:
+            emb = list(z["X"])
+            filenames = [str(v) for v in z["filename"]]
+            sources = [str(v) for v in z["source"]]
+        print(f"resuming: {len(emb):,} already done")
+    done = set(zip(filenames, sources))
+    errors = {}                                       # (filename, source) -> (path, error)
+
+    todo = {}
+    for df, _ in frames.values():
+        for r in df.itertuples():
+            key = (r.filename, r.source)
+            if key not in done:
+                todo.setdefault(key, r.resolved_path)
+    print(f"\n{len(done) + len(todo):,} unique clips, {len(todo):,} left to embed")
 
     t0, n_new = time.time(), 0
-    for i, row in df.iterrows():
-        fn = row["filename"]
-        if fn in done:
-            continue
-        p = paths[i]
+    for key, p in todo.items():
         if not p or not os.path.exists(p):
-            failed.append((fn, p, "file not found"))
+            errors[key] = (p, "file not found")
             continue
         try:
             wav = load_audio(p)
             with torch.inference_mode():
                 e = model(torch.from_numpy(wav)[None].to(device))[0].cpu().numpy()
         except Exception as ex:                       # corrupt file, decoder error
-            failed.append((fn, p, f"{type(ex).__name__}: {ex}"[:200]))
+            errors[key] = (p, f"{type(ex).__name__}: {ex}"[:200])
             continue
         emb.append(e)
-        meta["filename"].append(fn)
-        meta["Category"].append(row["Category"])
-        meta["SubCategory"].append(row.get("SubCategory", ""))
-        meta["source"].append(row.get("source", ""))
-        meta["path"].append(p)
+        filenames.append(key[0])
+        sources.append(key[1])
         n_new += 1
         if n_new % 200 == 0:
             rate = n_new / (time.time() - t0)
-            left = (len(df) - len(emb) - len(failed)) / max(rate, 1e-9)
-            print(f"  {len(emb):,}/{len(df):,}  {rate:.1f} clips/s  ~{left/60:.0f} min left", flush=True)
+            left = (len(todo) - n_new - len(errors)) / max(rate, 1e-9)
+            print(f"  {n_new:,}/{len(todo):,}  {rate:.1f} clips/s  ~{left/60:.0f} min left", flush=True)
         if n_new % args.save_every == 0:
-            save_npz(partial, emb, meta)
+            save_npz(partial, emb, filenames, sources)
 
-    save_npz(final, emb, meta)
+    save_npz(final, emb, filenames, sources)
     if partial.exists():
         partial.unlink()
-    pd.DataFrame(failed, columns=["filename", "path", "error"]).to_csv(
-        out_dir / f"envsound_{split}_failed.csv", index=False)
+    have = set(zip(filenames, sources))
+    stats = {}
+    for split, (df, n_total) in frames.items():
+        failed = [(r.filename, r.source, *errors[(r.filename, r.source)])
+                  for r in df.itertuples() if (r.filename, r.source) in errors]
+        pd.DataFrame(failed, columns=["filename", "source", "path", "error"]).to_csv(
+            out_dir / f"envsound_{split}_failed.csv", index=False)
+        embedded = sum((r.filename, r.source) in have for r in df.itertuples())
+        stats[split] = {"rows": n_total, "embedded": embedded, "failed": len(failed)}
+        print(f"  [{split}] embedded {embedded:,}  failed {len(failed):,}")
     X = np.asarray(emb, dtype=np.float32)
-    print(f"  saved {final}  X={tuple(np.load(final)['X'].shape)}  failed={len(failed)}")
-    if failed and not len(X):
-        fn, p, err = failed[0]
+    print(f"saved {final}  X={tuple(np.load(final)['X'].shape)}  failed={len(errors)}")
+    if errors and not len(X):
+        (fn, _), (p, err) = next(iter(errors.items()))
         print(f"  first error: {err}  ({fn} -> {p})")
     if len(X) and (np.abs(X).sum(1) == 0).mean() > 0.01:
         print("  WARNING: >1% all-zero embeddings, check the audio (silent or unreadable files?)")
-    return {"rows": n_total, "embedded": len(X), "failed": len(failed)}
+    return stats
+
+
+def combine(src_dir, splits, out_dir):
+    """Stack old envsound_{split}.npz files into one embeddings.npz. No CNN14."""
+    src_dir = Path(src_dir)
+    emb, filenames, sources, rows = [], [], [], []
+    seen = set()
+    stats = {}
+    for split in splits:
+        path = src_dir / f"envsound_{split}.npz"
+        if not path.is_file():
+            sys.exit(f"Missing {path}")
+        with np.load(path, allow_pickle=True) as z:
+            X = np.asarray(z["X"], dtype=np.float32)
+            fns = [str(v).strip() for v in z["filename"]]
+            srcs = [str(v).strip() for v in z["source"]] if "source" in z.files else [""] * len(fns)
+            paths = [str(v).strip() for v in z["path"]] if "path" in z.files else [""] * len(fns)
+        if X.ndim != 2 or X.shape[1] != 2048 or len(X) != len(fns):
+            sys.exit(f"{path}: X shape {tuple(X.shape)} for {len(fns)} filenames")
+        added = 0
+        for i, (fn, src, p) in enumerate(zip(fns, srcs, paths)):
+            rows.append((fn, src, p, f"{path.name} row {i}"))
+            if (fn, src) in seen:
+                continue
+            seen.add((fn, src))
+            emb.append(X[i])
+            filenames.append(fn)
+            sources.append(src)
+            added += 1
+        stats[split] = {"rows": len(fns), "added": added}
+        print(f"  {path.name}: {len(fns):,} rows, {added:,} new")
+    check_paths(rows)
+    final = Path(out_dir) / "embeddings.npz"
+    save_npz(final, emb, filenames, sources)
+    print(f"saved {final}  X={(len(emb), 2048)}")
+    return stats
+
+
+def write_info(out_dir, extra):
+    info = {
+        "model": "PANNs CNN14, AudioSet-pretrained, frozen (" + CKPT_NAME + ")",
+        "embedding": "2048-d output of fc1 (after ReLU), eval mode, no dropout",
+        "sample_rate": SR, "mono": True, "resampler": "librosa.load default",
+        "clip_handling": "whole clip in one pass; clips < 1 s zero-padded to 1 s",
+        "cache": "embeddings.npz: X, filename, source; one row per filename + source",
+        "not_stored": "Category, SubCategory, and path; labels are joined from the manifests at training time",
+    }
+    info.update(extra)
+    with open(Path(out_dir) / "extract_info.json", "w") as f:
+        json.dump(info, f, indent=2)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifests", required=True, help="folder with envsound_{train,val,test}.csv")
+    ap.add_argument("--manifests", default="", help="folder with envsound_{train,val,test}.csv")
+    ap.add_argument("--combine-from", default="",
+                    help="folder of old envsound_{split}.npz files to stack into <out>/embeddings.npz "
+                         "(no CNN14, no manifests)")
     ap.add_argument("--audio-root", default="",
                     help="base folder for relative paths (default: parent of the manifests folder), "
                          "or the tree to search by filename")
@@ -299,6 +400,22 @@ def main():
     ap.add_argument("--save-every", type=int, default=2000)
     ap.add_argument("--restart", action="store_true", help="ignore saved progress")
     args = ap.parse_args()
+    splits = [s.strip() for s in args.splits.split(",") if s.strip()]
+
+    if args.combine_from:
+        if args.limit:
+            sys.exit("--limit does not apply to --combine-from")
+        Path(args.out).mkdir(parents=True, exist_ok=True)
+        print(f"Combining {args.combine_from} -> {args.out}")
+        old_info = Path(args.combine_from) / "extract_info.json"
+        old = json.loads(old_info.read_text()) if old_info.is_file() else None
+        stats = combine(args.combine_from, splits, args.out)
+        write_info(args.out, {"combined_from": str(Path(args.combine_from).resolve()),
+                              "splits": stats, "original_extract_info": old})
+        print("\nDone.", json.dumps(stats))
+        return
+    if not args.manifests:
+        sys.exit("pass --manifests (or --combine-from to stack old per-split caches)")
 
     import torch
     device = ("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device
@@ -308,16 +425,8 @@ def main():
     print(f"Device: {device}" + ("" if device == "cuda" else "  (no GPU: expect several hours for ~58k clips)"))
     model = load_model(args.checkpoint, device)
 
-    stats = {s: run_split(s, model, device, args) for s in args.splits.split(",")}
-    info = {
-        "model": "PANNs CNN14, AudioSet-pretrained, frozen (" + CKPT_NAME + ")",
-        "embedding": "2048-d output of fc1 (after ReLU), eval mode, no dropout",
-        "sample_rate": SR, "mono": True, "resampler": "librosa.load default",
-        "clip_handling": "whole clip in one pass; clips < 1 s zero-padded to 1 s",
-        "splits": stats,
-    }
-    with open(Path(args.out) / "extract_info.json", "w") as f:
-        json.dump(info, f, indent=2)
+    stats = extract(splits, model, device, args)
+    write_info(args.out, {"splits": stats})
     print("\nDone.", json.dumps(stats))
 
 
