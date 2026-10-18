@@ -1,12 +1,11 @@
 """
 Local demo for the UCS tagger.
 
-One page, on this machine. Drop a clip, or play one from the EnvSound test
-split. The clip goes through frozen CNN14, then a saved linear probe.
+One page, on this machine. Drop a clip. It goes through frozen CNN14, then a
+saved linear probe. The class names come from that probe's checkpoint.
 
 The page lists every probe saved under results/. Choosing one loads that
-checkpoint and the test clips from the embeddings folder recorded in that
-run's summary.json. The default is the subcategory head, seed 42.
+checkpoint. The default is the subcategory head, seed 42.
 
     python demo/app.py
 
@@ -15,8 +14,6 @@ Open the URL it prints. Uses the packages already listed in requirements.txt.
 import argparse
 import json
 import os
-import random
-import shutil
 import sys
 import tempfile
 import threading
@@ -33,16 +30,14 @@ ROOT = DEMO.parent
 sys.path.insert(0, str(ROOT))
 
 from extract_panns_embeddings import AUDIO_EXT, DEFAULT_CKPT, MIN_SAMPLES, SR, load_model
-from train_linear_probe import EMPTY, LinearProbe
+from train_linear_probe import LinearProbe
 
 DEFAULT_RESULTS = ROOT / "results"
-DEFAULT_EMBEDDINGS = ROOT / "embeddings" / "panns_cnn14"
 DEFAULT_PROBE = DEFAULT_RESULTS / "panns_cnn14_linear" / "subcategory" / "seed_42" / "probe.pt"
 MAX_SECONDS = 30
 MAX_BYTES = 30 * 1024 * 1024
 PAGE = DEMO / "index.html"
 TASK_RANK = {"subcategory": 0, "pair": 1, "category": 2}
-_warned_embeddings = set()
 
 
 class AudioError(Exception):
@@ -64,8 +59,6 @@ def parse_args(argv=None):
     ap.add_argument("--probe", default=None,
                     help="checkpoint to load first (default: subcategory seed 42, else the first saved probe)")
     ap.add_argument("--checkpoint", default=str(DEFAULT_CKPT))
-    ap.add_argument("--library", default=None,
-                    help="test-split .npz for the first checkpoint (default: envsound_test.npz in that run's embeddings folder)")
     ap.add_argument("--device", default="auto", help="auto, cuda, or cpu")
     ap.add_argument("--top", type=int, default=5)
     return ap.parse_args(argv)
@@ -88,38 +81,6 @@ def parse_seed(name):
         return None
 
 
-def embeddings_from_task_dir(task_dir):
-    """Embeddings folder recorded for this training run.
-
-    train_linear_probe.py writes it to summary.json under settings.embeddings.
-    A seed folder can exist before that file does; those fall back to the
-    default cache.
-    """
-    task_dir = Path(task_dir)
-    summary_path = task_dir / "summary.json"
-    raw = ""
-    if summary_path.is_file():
-        try:
-            with open(summary_path, encoding="utf-8") as handle:
-                summary = json.load(handle)
-            raw = str((summary.get("settings") or {}).get("embeddings") or "").strip()
-        except (OSError, json.JSONDecodeError, AttributeError):
-            raw = ""
-    if not raw:
-        key = str(task_dir.resolve())
-        if key not in _warned_embeddings:
-            _warned_embeddings.add(key)
-            print(
-                f"No embeddings path in {summary_path}. Using {display_path(DEFAULT_EMBEDDINGS)}.",
-                flush=True,
-            )
-        return DEFAULT_EMBEDDINGS.resolve()
-    path = Path(raw)
-    if not path.is_absolute():
-        path = ROOT / path
-    return path.resolve()
-
-
 def seed_f1(seed_dir):
     path = Path(seed_dir) / "metrics.json"
     if not path.is_file():
@@ -137,7 +98,6 @@ def make_entry(probe_path, results_root):
     results_root = Path(results_root).resolve()
     seed_dir = probe_path.parent
     task_dir = seed_dir.parent
-    embeddings_dir = embeddings_from_task_dir(task_dir)
     try:
         ident = probe_path.relative_to(results_root).as_posix()
         parts = task_dir.relative_to(results_root).parts
@@ -161,9 +121,6 @@ def make_entry(probe_path, results_root):
         "seed": parse_seed(seed_dir.name),
         "f1": seed_f1(seed_dir),
         "probe": probe_path,
-        "embeddings_dir": embeddings_dir,
-        "library": (embeddings_dir / "envsound_test.npz").resolve(),
-        "embeddings": display_path(embeddings_dir),
     }
 
 
@@ -172,7 +129,6 @@ def sort_key(entry):
     if seed is None:
         seed = 10 ** 9
     return (
-        entry["embeddings"],
         entry["run"],
         TASK_RANK.get(entry["task"], 9),
         entry["task"],
@@ -218,14 +174,6 @@ def choose_initial(entries, probe_arg, results_root):
     )
 
 
-def point_library(entry, library_path):
-    library_path = Path(library_path).resolve()
-    entry["library"] = library_path
-    entry["embeddings_dir"] = library_path.parent
-    entry["embeddings"] = display_path(library_path.parent)
-    return entry
-
-
 def entry_public(entry):
     return {
         "id": entry["id"],
@@ -233,12 +181,7 @@ def entry_public(entry):
         "task": entry["task"],
         "seed": entry["seed"],
         "f1": entry["f1"],
-        "embeddings": entry["embeddings"],
     }
-
-
-def blank(value):
-    return str(value).strip().lower() in EMPTY
 
 
 def load_probe(path, device):
@@ -274,41 +217,13 @@ def load_probe(path, device):
     }
 
 
-def load_library(path):
-    path = Path(path)
-    if not path.is_file():
-        print(f"No test-split cache at {path}. Uploads still work.", flush=True)
-        return []
-    with np.load(path, allow_pickle=True) as z:
-        filename = [str(v).strip() for v in z["filename"]]
-        paths = [str(v).strip() for v in z["path"]]
-        category = [str(v).strip() for v in z["Category"]]
-        subcategory = ["" if blank(v) else str(v).strip() for v in z["SubCategory"]]
-        source = ["" if blank(v) else str(v).strip() for v in z["source"]]
-    rows = []
-    for i, name in enumerate(filename):
-        rows.append({
-            "id": i,
-            "filename": name,
-            "path": paths[i],
-            "category": category[i],
-            "subcategory": subcategory[i],
-            "source": source[i],
-        })
-    print(f"Test clips: {len(rows):,}", flush=True)
-    return rows
-
-
-def configure(httpd, encoder, device, top, results_root, extras=None, library_override=None):
+def configure(httpd, encoder, device, top, results_root, extras=None):
     httpd.encoder = encoder
     httpd.device = device
     httpd.top = top
     httpd.results_root = Path(results_root).resolve()
     httpd.extras = list(extras or [])
-    httpd.library_override = library_override
-    httpd.libraries = {}
     httpd.infer_lock = threading.Lock()
-    httpd.cache_lock = threading.Lock()
     httpd.switch_lock = threading.Lock()
     httpd.state = None
 
@@ -329,13 +244,9 @@ def boot(args):
     entries = discover_checkpoints(results_root)
     entry, is_extra = choose_initial(entries, args.probe, results_root)
     extras = [entry] if is_extra else []
-    library_override = None
-    if args.library and str(args.library).strip():
-        library_override = (entry["probe"], Path(args.library).resolve())
-        point_library(entry, library_override[1])
     encoder = load_model(args.checkpoint, device)
     httpd = Server((args.host, args.port), Handler)
-    configure(httpd, encoder, device, args.top, results_root, extras, library_override)
+    configure(httpd, encoder, device, args.top, results_root, extras)
     print(f"Checkpoints: {len(httpd.catalog())}", flush=True)
     try:
         httpd.activate(entry)
@@ -408,53 +319,14 @@ def predict_path(state, path):
     return predict_wav(state, wav), seconds, truncated
 
 
-def result_payload(name, rows, seconds, truncated, task, labelled=None, source="", clip_id=None):
-    payload = {
+def result_payload(name, rows, seconds, truncated, task):
+    return {
         "name": name,
         "seconds": seconds,
         "truncated": truncated,
         "task": task,
         "predictions": rows,
     }
-    if labelled is not None:
-        payload["labelled"] = labelled
-    if source:
-        payload["source"] = source
-    if clip_id is not None:
-        payload["id"] = clip_id
-    return payload
-
-
-def pick_clip(state):
-    rows = state["library"]
-    if not rows:
-        raise AudioError("No test clips are indexed.", status=404)
-    fallback = None
-    for _ in range(30):
-        row = rows[random.randrange(len(rows))]
-        if not os.path.isfile(row["path"]):
-            continue
-        if row["subcategory"]:
-            return row
-        if fallback is None:
-            fallback = row
-    if fallback is not None:
-        return fallback
-    raise AudioError("No test clip was found on disk.", status=404)
-
-
-def score_row(state, row):
-    rows, seconds, truncated = predict_path(state, row["path"])
-    return result_payload(
-        row["filename"],
-        rows,
-        seconds,
-        truncated,
-        state["task"],
-        labelled={"category": row["category"], "subcategory": row["subcategory"]},
-        source=row["source"],
-        clip_id=row["id"],
-    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -468,11 +340,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             elif path == "/api/info":
                 self.send_json(200, self.server.info())
-            elif path == "/api/random":
-                state = self.server.state
-                self.send_json(200, score_row(state, pick_clip(state)))
-            elif path.startswith("/api/clip/"):
-                self.serve_clip(path[len("/api/clip/"):])
             else:
                 self.send_json(404, {"error": "Not found."})
         except AudioError as ex:
@@ -565,38 +432,6 @@ class Handler(BaseHTTPRequestHandler):
             Path(tmp).unlink(missing_ok=True)
         self.send_json(200, result_payload(name, rows, seconds, truncated, state["task"]))
 
-    def serve_clip(self, raw_id):
-        if not raw_id.isdigit():
-            self.send_json(404, {"error": "Not found."})
-            return
-        state = self.server.state
-        clip_id = int(raw_id)
-        if clip_id >= len(state["library"]):
-            self.send_json(404, {"error": "Not found."})
-            return
-        path = Path(state["library"][clip_id]["path"])
-        if not path.is_file():
-            self.send_json(404, {"error": "This clip is not on disk."})
-            return
-        mime = {
-            ".wav": "audio/wav",
-            ".flac": "audio/flac",
-            ".ogg": "audio/ogg",
-            ".mp3": "audio/mpeg",
-            ".m4a": "audio/mp4",
-            ".aiff": "audio/aiff",
-            ".aif": "audio/aiff",
-        }.get(path.suffix.lower(), "application/octet-stream")
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.end_headers()
-            with path.open("rb") as handle:
-                shutil.copyfileobj(handle, self.wfile, length=256 * 1024)
-        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
-            pass
-
     def send_json(self, status, payload):
         self.send_bytes(status, "application/json; charset=utf-8", json.dumps(payload).encode("utf-8"))
 
@@ -629,30 +464,10 @@ class Server(ThreadingHTTPServer):
         for extra in self.extras:
             if extra["probe"] not in known and extra["probe"].is_file():
                 entries.append(dict(extra))
-        if self.library_override:
-            probe_path, library_path = self.library_override
-            for entry in entries:
-                if entry["probe"] == probe_path:
-                    point_library(entry, library_path)
         entries.sort(key=sort_key)
         return entries
 
-    def library_rows(self, path):
-        key = str(Path(path).resolve())
-        with self.cache_lock:
-            cached = self.libraries.get(key)
-        if cached is not None:
-            return cached
-        try:
-            rows = load_library(path)
-        except Exception as ex:
-            print(f"Could not read {path}: {ex}", flush=True)
-            rows = []
-        with self.cache_lock:
-            return self.libraries.setdefault(key, rows)
-
     def activate(self, entry):
-        library = self.library_rows(entry["library"])
         with self.infer_lock:
             loaded = load_probe(entry["probe"], self.device)
             self.state = {
@@ -663,17 +478,15 @@ class Server(ThreadingHTTPServer):
                 "seed": loaded["seed"],
                 "encoder": self.encoder,
                 "device": self.device,
-                "library": library,
                 "top": self.top,
                 "lock": self.infer_lock,
                 "id": entry["id"],
                 "run": entry["run"],
-                "embeddings": entry["embeddings"],
             }
         state = self.state
         print(
             f"Checkpoint: {entry['run']} · {state['task']}, seed {state['seed']}, "
-            f"{len(state['classes'])} classes · {entry['embeddings']}",
+            f"{len(state['classes'])} classes",
             flush=True,
         )
         return state
@@ -685,11 +498,9 @@ class Server(ThreadingHTTPServer):
             "seed": state["seed"],
             "n_classes": len(state["classes"]),
             "device": state["device"],
-            "library": len(state["library"]),
             "max_seconds": MAX_SECONDS,
             "current": state["id"],
             "run": state["run"],
-            "embeddings": state["embeddings"],
             "checkpoints": [entry_public(entry) for entry in self.catalog()],
         }
 

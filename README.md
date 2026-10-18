@@ -301,9 +301,11 @@ in those files is in [evaluation checks](docs/results.md#evaluation).
 
 ### Demo
 
-`demo/app.py` serves one page on this machine. Drop a clip, or play one from
-the EnvSound test split. The clip goes through frozen CNN14, then the linear
-probe selected on the page. The script prints the URL (default
+`demo/app.py` serves one page on this machine. Drop a clip and the page plays
+it and predicts a UCS tag. The clip goes through frozen CNN14, then the linear
+probe selected on the page. The class names come from that `probe.pt`, so the
+demo needs no embeddings cache or manifest. An upload has no stored label, so
+the page shows predictions only. The script prints the URL (default
 `http://127.0.0.1:8765`). It uses the packages already listed in
 `requirements.txt`.
 
@@ -311,25 +313,17 @@ probe selected on the page. The script prints the URL (default
 python demo/app.py
 ```
 
-The **Checkpoint** menu lists every `seed_<n>/probe.pt` under `results/`.
-Each option is the results run, the task, the seed, and that seed's test
-macro F1 when `metrics.json` is present. Options are grouped by the embeddings
-folder recorded in that run's `summary.json` (`settings.embeddings`). Choosing
-one loads that probe and the test clips from `envsound_test.npz` in that
-folder. The line under the menu names those embeddings. The previous prediction
-is cleared. Reload the page to pick up a probe saved while the server is
-running.
+The **Checkpoint** menu lists every `seed_<n>/probe.pt` under `results/`,
+grouped by results run. Each option is the task, the seed, and that seed's test
+macro F1 when `metrics.json` is present. Choosing one loads that probe, its
+class list, and its parent map. The previous prediction is cleared. Reload the
+page to pick up a probe saved while the server is running.
 
 The page opens on `results/panns_cnn14_linear/subcategory/seed_42` when that
 probe exists. Otherwise it uses the first subcategory seed 42, then the first
-saved probe. A seed folder written before `summary.json` uses
-`embeddings/panns_cnn14`.
+saved probe.
 
 The first 30 seconds of a clip are scored. Files over 30 MB are refused.
-Uploads still work when the test-split cache is missing. **Play a test clip**
-needs `envsound_test.npz` and the audio files it points at.
-
-
 
 #### Flags
 
@@ -337,7 +331,6 @@ needs `envsound_test.npz` and the audio files it points at.
 | --- | --- | --- |
 | `--results` | `results` | Folder to scan for saved probes. |
 | `--probe` | subcategory seed 42, else the first saved probe | Checkpoint to load first. |
-| `--library` | `envsound_test.npz` in that run's embeddings folder | Test-split cache for the first checkpoint. |
 | `--checkpoint` | `models/Cnn14_mAP=0.431.pth` | CNN14 weights. See [Checkpoint](#checkpoint). |
 | `--device` | `auto` | `auto`, `cuda`, or `cpu`. |
 | `--host` | `127.0.0.1` | |

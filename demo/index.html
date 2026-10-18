@@ -55,7 +55,6 @@
     }
     select:focus { border-color: var(--mark); outline: none; }
     select:disabled { opacity: 0.72; }
-    #embeddings { margin-top: 0.4rem; }
     .drop {
       display: flex;
       flex-direction: column;
@@ -78,18 +77,6 @@
     }
     .drop-title { font-size: 1.05rem; }
     .drop-hint { color: var(--muted); font-size: 0.9rem; }
-    .actions { margin-top: 0.85rem; }
-    button {
-      background: transparent;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 0.4rem 0.9rem;
-      color: var(--ink);
-      font: inherit;
-      cursor: pointer;
-    }
-    button:hover { border-color: var(--ink); }
-    button:disabled { opacity: 0.45; cursor: default; }
     #status { min-height: 1.4rem; margin: 0.9rem 0 0; }
     #status.err { color: var(--err); }
     audio { width: 100%; margin-top: 0.4rem; }
@@ -102,9 +89,7 @@
       text-transform: uppercase;
     }
     .tag { margin: 0.15rem 0 0; font-size: 1.7rem; font-weight: 600; word-break: break-word; }
-    .tag.small { font-size: 1.15rem; font-weight: 600; }
     .pct { margin: 0.15rem 0 0; color: var(--mark); font-variant-numeric: tabular-nums; }
-    .note { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.92rem; }
     ol { list-style: none; margin: 0.35rem 0 0; padding: 0; }
     li { margin: 0.65rem 0; }
     .alt { display: flex; justify-content: space-between; gap: 1rem; }
@@ -123,16 +108,12 @@
       <label for="checkpoint">Checkpoint</label>
       <select id="checkpoint"></select>
     </div>
-    <p class="note" id="embeddings" hidden></p>
 
     <label class="drop" id="drop">
       <input id="file" type="file" accept="audio/*,.wav,.flac,.ogg,.mp3,.m4a,.aiff,.aif">
       <span class="drop-title">Drop a clip here</span>
       <span class="drop-hint" id="hint">or click to choose a wav, flac, ogg, mp3, m4a, or aiff file.</span>
     </label>
-    <div class="actions">
-      <button type="button" id="random" hidden>Play a test clip</button>
-    </div>
     <p id="status" role="status"></p>
 
     <section id="out" hidden>
@@ -142,11 +123,6 @@
         <p class="kicker">Predicted</p>
         <p id="pred" class="tag"></p>
         <p id="pct" class="pct"></p>
-        <p id="note" class="note"></p>
-        <div id="labelled" hidden>
-          <p class="kicker">Labelled</p>
-          <p id="labelled-tag" class="tag small"></p>
-        </div>
         <div id="alts-wrap" hidden>
           <p class="kicker">Other tags</p>
           <ol id="alts"></ol>
@@ -159,11 +135,9 @@
     const lede = document.getElementById("lede");
     const checkpointField = document.getElementById("checkpoint-field");
     const checkpoint = document.getElementById("checkpoint");
-    const embeddings = document.getElementById("embeddings");
     const hint = document.getElementById("hint");
     const drop = document.getElementById("drop");
     const fileInput = document.getElementById("file");
-    const randomBtn = document.getElementById("random");
     const status = document.getElementById("status");
     const out = document.getElementById("out");
     const player = document.getElementById("player");
@@ -171,9 +145,6 @@
     const result = document.getElementById("result");
     const pred = document.getElementById("pred");
     const pctEl = document.getElementById("pct");
-    const note = document.getElementById("note");
-    const labelled = document.getElementById("labelled");
-    const labelledTag = document.getElementById("labelled-tag");
     const altsWrap = document.getElementById("alts-wrap");
     const alts = document.getElementById("alts");
     const foot = document.getElementById("foot");
@@ -196,7 +167,6 @@
     function setBusy(on) {
       busy = on;
       fileInput.disabled = on;
-      randomBtn.disabled = on;
       checkpoint.disabled = on || checkpointCount < 2;
     }
 
@@ -209,8 +179,6 @@
       result.hidden = true;
       pred.textContent = "";
       pctEl.textContent = "";
-      note.textContent = "";
-      labelled.hidden = true;
       altsWrap.hidden = true;
       alts.replaceChildren();
     }
@@ -220,13 +188,6 @@
       player.src = url;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
       objectUrl = url;
-      player.play().catch(() => {});
-    }
-
-    function playClip(id) {
-      player.src = "/api/clip/" + id;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-      objectUrl = "";
       player.play().catch(() => {});
     }
 
@@ -246,25 +207,10 @@
       const top = data.predictions[0];
       const bits = [data.name];
       if (data.seconds != null) bits.push(Number(data.seconds).toFixed(1) + " s");
-      if (data.source) bits.push(data.source);
       if (data.truncated) bits.push("first " + maxSeconds + " seconds scored");
       meta.textContent = bits.join(" · ");
       pred.textContent = tagOf(top);
       pctEl.textContent = pct(top.prob);
-      if (data.labelled) {
-        labelled.hidden = false;
-        labelledTag.textContent = tagOf(data.labelled);
-        const same = data.task === "category"
-          ? data.labelled.category === top.category
-          : tagOf(data.labelled) === tagOf(top);
-        const noun = data.task === "category" ? "category" : "tag";
-        note.textContent = same
-          ? "Same " + noun + " as the label."
-          : "Different " + noun + " from the label.";
-      } else {
-        labelled.hidden = true;
-        note.textContent = "";
-      }
       const rest = data.predictions.slice(1);
       alts.replaceChildren();
       rest.forEach((row) => {
@@ -341,18 +287,10 @@
     window.addEventListener("dragover", (event) => event.preventDefault());
     window.addEventListener("drop", (event) => event.preventDefault());
 
-    randomBtn.addEventListener("click", () => {
-      run(async () => {
-        const data = await read(await fetch("/api/random"));
-        playClip(data.id);
-        return data;
-      });
-    });
-
     function checkpointLabel(row) {
       const seed = row.seed == null ? "" : " · seed " + row.seed;
       const score = row.f1 == null ? "" : " · F1 " + Number(row.f1).toFixed(3);
-      return row.run + " · " + row.task + seed + score;
+      return row.task + seed + score;
     }
 
     function fillCheckpoints(list, current) {
@@ -361,10 +299,10 @@
       let group = null;
       let groupName = null;
       list.forEach((row) => {
-        if (row.embeddings !== groupName) {
-          groupName = row.embeddings;
+        if (row.run !== groupName) {
+          groupName = row.run;
           group = document.createElement("optgroup");
-          group.label = row.embeddings;
+          group.label = row.run;
           checkpoint.append(group);
         }
         const opt = document.createElement("option");
@@ -389,10 +327,7 @@
         + info.max_seconds + " seconds are scored.";
       const seed = info.seed == null ? "" : " · seed " + info.seed;
       foot.textContent = "Linear probe · " + info.task + seed + " · " + info.n_classes + " classes · " + info.device;
-      embeddings.textContent = info.embeddings ? "Embeddings · " + info.embeddings : "";
-      embeddings.hidden = !info.embeddings;
       fillCheckpoints(info.checkpoints || [], info.current);
-      randomBtn.hidden = !info.library;
     }
 
     checkpoint.addEventListener("change", () => {
