@@ -9,12 +9,13 @@ half: one embedding per clip, in a single cache for every split.
 The cache holds no labels. Labels come from the manifests at training time
 (train_linear_probe.py --manifests), so a new label set reuses this cache.
 
-Input : manifests/envsound_{train,val,test}.csv  (only filename, source, path,
-        exists are read; they say which clips to embed)
+Input : a folder of envsound_{train,val,test}.csv, or one CSV
+        (only filename, source, path, exists are read; they say which clips to embed)
 Output: <out>/embeddings.npz with
           X           float32 (N, 2048)
           filename, source   (str arrays; the pair is the lookup key)
         <out>/envsound_{split}_failed.csv   clips that could not be read
+        (one CSV writes <stem>_failed.csv instead)
         <out>/extract_info.json             settings used (for your methods section)
 
 The checkpoint defaults to models/Cnn14_mAP=0.431.pth next to this script.
@@ -23,6 +24,7 @@ If that file is missing or too small, it is downloaded there (~330 MB).
 Usage (Windows, from the folder that holds this script):
   python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests" --limit 50
   python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests"
+  python extract_panns_embeddings.py --manifests "E:\\Sounds for TA\\Extracted\\manifests\\envsound_train.csv"
 
 Paths: if the manifests have a path column (path / filepath / audio_path),
 it is used. Absolute paths are used as written. Relative paths (as written by
@@ -147,6 +149,16 @@ def find_manifest(folder, split):
     sys.exit(f"No manifest for '{split}' in {folder} (looked for envsound_{split}.csv)")
 
 
+def resolve_manifests(manifests, splits):
+    """One CSV, or a folder of envsound_{split}.csv. Keys label the failed-clip files."""
+    target = Path(manifests)
+    if target.is_file():
+        return {target.stem: target}
+    if target.is_dir():
+        return {split: find_manifest(target, split) for split in splits}
+    sys.exit(f"--manifests is not a CSV or a folder: {target}")
+
+
 _file_index = None
 
 
@@ -238,8 +250,7 @@ def check_paths(rows):
                  + "\n".join(lines))
 
 
-def read_split(split, args):
-    manifest = find_manifest(args.manifests, split)
+def read_split(split, manifest, args):
     df = pd.read_csv(manifest, dtype=str, keep_default_na=False)
     for c in ("filename", "source"):
         if c not in df.columns:
@@ -257,11 +268,12 @@ def read_split(split, args):
     return df, n_total
 
 
-def extract(splits, model, device, args):
+def extract(manifests, model, device, args):
     import torch
+    single = Path(args.manifests).is_file()
     frames = {}
-    for split in splits:
-        frames[split] = read_split(split, args)
+    for split, manifest in manifests.items():
+        frames[split] = read_split(split, manifest, args)
     check_paths((r.filename, r.source, r.resolved_path, f"{split} manifest")
                 for split, (df, _) in frames.items() for r in df.itertuples())
 
@@ -317,8 +329,9 @@ def extract(splits, model, device, args):
     for split, (df, n_total) in frames.items():
         failed = [(r.filename, r.source, *errors[(r.filename, r.source)])
                   for r in df.itertuples() if (r.filename, r.source) in errors]
+        failed_name = f"{split}_failed.csv" if single else f"envsound_{split}_failed.csv"
         pd.DataFrame(failed, columns=["filename", "source", "path", "error"]).to_csv(
-            out_dir / f"envsound_{split}_failed.csv", index=False)
+            out_dir / failed_name, index=False)
         embedded = sum((r.filename, r.source) in have for r in df.itertuples())
         stats[split] = {"rows": n_total, "embedded": embedded, "failed": len(failed)}
         print(f"  [{split}] embedded {embedded:,}  failed {len(failed):,}")
@@ -384,17 +397,19 @@ def write_info(out_dir, extra):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--manifests", default="", help="folder with envsound_{train,val,test}.csv")
+    ap.add_argument("--manifests", default="",
+                    help="folder with envsound_{train,val,test}.csv, or one CSV")
     ap.add_argument("--combine-from", default="",
                     help="folder of old envsound_{split}.npz files to stack into <out>/embeddings.npz "
                          "(no CNN14, no manifests)")
     ap.add_argument("--audio-root", default="",
-                    help="base folder for relative paths (default: parent of the manifests folder), "
-                         "or the tree to search by filename")
+                    help="base folder for relative paths (default: parent of the manifests folder, "
+                         "or the parent of a single CSV's folder), or the tree to search by filename")
     ap.add_argument("--out", default="embeddings/panns_cnn14")
     ap.add_argument("--checkpoint", default=str(DEFAULT_CKPT),
                     help="CNN14 weights (default: models/Cnn14_mAP=0.431.pth next to this script)")
-    ap.add_argument("--splits", default="train,val,test")
+    ap.add_argument("--splits", default="train,val,test",
+                    help="comma-separated manifests to embed when --manifests is a folder")
     ap.add_argument("--device", default="auto", help="auto, cuda or cpu")
     ap.add_argument("--limit", type=int, default=0, help="only the first N rows per split (smoke test)")
     ap.add_argument("--save-every", type=int, default=2000)
@@ -425,7 +440,7 @@ def main():
     print(f"Device: {device}" + ("" if device == "cuda" else "  (no GPU: expect several hours for ~58k clips)"))
     model = load_model(args.checkpoint, device)
 
-    stats = extract(splits, model, device, args)
+    stats = extract(resolve_manifests(args.manifests, splits), model, device, args)
     write_info(args.out, {"splits": stats})
     print("\nDone.", json.dumps(stats))
 

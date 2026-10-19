@@ -69,10 +69,12 @@ The [manifests](docs/data.md#manifests) have a `path` column. These CSVs sit
 outside the audio tree, so pass `--audio-root` for the folder that holds
 `FSD50K/`, `AudioSet/`, and `ESC-50/`. Relative paths resolve against that
 folder. Absolute paths are used as written. Without `--audio-root`, relative
-paths resolve against the parent of the folder passed to `--manifests`. When a
-manifest has no path column (`path`, `filepath`, `file_path`, `audio_path`, or
-`abs_path`), `--audio-root` is searched by filename. Rows with `exists` set to
-false are skipped ([known data issues](docs/data.md#data-issues)).
+paths resolve against the parent of the folder passed to `--manifests`. For one
+CSV, that base is the parent of the file's folder, which is the data root when
+the CSV sits in `manifests/`. When a manifest has no path column (`path`,
+`filepath`, `file_path`, `audio_path`, or `abs_path`), `--audio-root` is
+searched by filename. Rows with `exists` set to false are skipped
+([known data issues](docs/data.md#data-issues)).
 
 #### Smoke test
 
@@ -99,7 +101,11 @@ base. Paths are relative to the data root, described in
 python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests"
 ```
 
+One CSV, any filename. `--splits` is not used:
 
+```powershell
+python extract_panns_embeddings.py --manifests "E:\Sounds for TA\Extracted\manifests\envsound_train.csv"
+```
 
 #### Output
 
@@ -108,7 +114,7 @@ Under `--out` (default `embeddings/panns_cnn14/`):
 | File | Contents |
 | --- | --- |
 | `embeddings.npz` | `X` (n_clips × 2048) plus `filename` and `source`, one row per `filename` + `source` |
-| `envsound_{split}_failed.csv` | clips from that split that could not be read |
+| `envsound_{split}_failed.csv` | clips from that split that could not be read. One CSV writes `{stem}_failed.csv` instead |
 | `extract_info.json` | sample rate, embedding definition, per-split counts, and what is not stored |
 
 A clip listed in more than one split is embedded once. If the same `filename`
@@ -128,12 +134,12 @@ often the partial file is rewritten.
 
 | Flag | Default | What it does |
 | --- | --- | --- |
-| `--manifests` | required, unless `--combine-from` | Folder with `envsound_{train,val,test}.csv`. Each needs `filename` and `source`. |
+| `--manifests` | required, unless `--combine-from` | Folder with `envsound_{train,val,test}.csv`, or one CSV. Each needs `filename` and `source`. |
 | `--combine-from` | off | Folder of old `envsound_{split}.npz` files to stack into `<--out>/embeddings.npz`. No CNN14. See [Combine old caches](#combine-old-caches). |
 | `--audio-root` | parent of that folder | Base for relative paths, or the tree to search by filename when the manifest has no path column. |
 | `--out` | `embeddings/panns_cnn14` | Folder for this run. A new name starts a separate cache. The same name resumes it. |
 | `--checkpoint` | `models/Cnn14_mAP=0.431.pth` | CNN14 weights, next to the script. Downloaded there if missing. See [Checkpoint](#checkpoint). |
-| `--splits` | `train,val,test` | Comma-separated manifests to embed. |
+| `--splits` | `train,val,test` | Comma-separated manifests to embed when `--manifests` is a folder. Ignored for one CSV. |
 | `--device` | `auto` | `auto`, `cuda`, or `cpu`. |
 | `--limit` | `0` (every row) | First N rows of each split. Writes `<--out>/_smoke_<N>/`. |
 | `--save-every` | `2000` | Rewrite `embeddings.partial.npz` every N new clips. |
