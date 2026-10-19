@@ -73,9 +73,10 @@ manifests (train/val/test CSV) ──► join on filename + source ──► dro
 The embedding depends only on the audio and the frozen CNN14. The UCS labels
 and the split each clip belongs to depend on the labeling method. So the cache
 holds no labels, and the probe reads labels and splits from the manifests.
-A new label set is a new `--manifests` folder and a new probe `--out`, with the
-same `--embeddings`. Nothing is re-extracted, as long as every clip in the new
-manifests is already in the cache.
+A new label set is three CSVs (`--train`, `--eval`, `--test`; any filenames)
+and a new probe `--out`, with the same `--embeddings`. `--manifests` still
+accepts a folder of `envsound_{train,val,test}.csv`. Nothing is re-extracted,
+as long as every clip in the new CSVs is already in the cache.
 
 How to run both steps is in [Getting started](../README.md#getting-started).
 
@@ -112,8 +113,12 @@ never opens audio. For each manifest row whose `exists` is not false, it looks
 up `filename` plus `source` in the cache. Labels, splits, and row order come
 from the manifest. If any row has no vector, or the same pair appears twice in
 one manifest or in more than one split, it stops and prints the rows. Cache rows
-that no manifest uses are counted and ignored. `summary.json` records both
-`settings.embeddings` and `settings.manifests`.
+that no manifest uses are counted and ignored. `summary.json` records
+`settings.embeddings` and the three CSV paths (`settings.train`, `settings.eval`,
+`settings.test`). `settings.manifests` is the folder when `--manifests` was used.
+`--verbose` writes `verbose_test.csv` in the pair output folder. Every test
+row is kept. The top 5 labels are the pair classes with the highest mean
+softmax across seeds.
 
 Macro F1 is the mean of per-class F1 over classes with at least one true sample
 in the scored split. `macro_f1_all_train_classes` scores a missing class as 0.

@@ -202,8 +202,10 @@ skipped. `--restart` retrains it.
 No training:
 
 ```powershell
-python train_linear_probe.py --manifests "E:\Sounds for TA\Extracted\manifests" --dry-run
+python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv --dry-run
 ```
+
+The three paths can have any filename. `--val` is the same flag as `--eval`. A folder of `envsound_{train,val,test}.csv` still works with `--manifests`.
 
 #### Smoke test
 
@@ -248,6 +250,7 @@ Under `--out/<task>/` (default `results/panns_cnn14_linear/<task>/`):
 | `seed_<n>/confusion_category.csv` | confusion after roll-up |
 | `seed_<n>/predictions.npz` | test logits, predictions, filename, source, path (from the CSV) |
 | `seed_<n>/probe.pt` | best checkpoint, class list, parent map |
+| `verbose_test.csv` | only for the pair head, and only with `--verbose`. Every test row, plus the top 5 pair predictions. See [Verbose predictions](#verbose-predictions). |
 
 
 
@@ -256,7 +259,10 @@ Under `--out/<task>/` (default `results/panns_cnn14_linear/<task>/`):
 | Flag | Default | What it does |
 | --- | --- | --- |
 | `--embeddings` | `embeddings/panns_cnn14` | Folder holding `embeddings.npz` from the extractor. This is the `--out` of that run. |
-| `--manifests` | required | Folder with `envsound_{train,val,test}.csv`. Needs `filename`, `source`, and `Category`. `SubCategory` and `path` are optional. |
+| `--train` | | Training CSV. Any filename. Required unless `--manifests` is set. Needs `filename`, `source`, and `Category`. `SubCategory` and `path` are optional. |
+| `--eval` | | Validation CSV, used for early stopping. Any filename. `--val` is the same flag. |
+| `--test` | | Test CSV, scored once per seed. Any filename. |
+| `--manifests` | | Folder with `envsound_{train,val,test}.csv` (or `{split}.csv`). Alternative to `--train`, `--eval`, and `--test`. Do not pass both. |
 | `--out` | `results/panns_cnn14_linear` | Results folder. Files land in `<--out>/<task>/`. |
 | `--task` | `subcategory` | `subcategory`, `category`, or `pair`. See [Tasks](#tasks). |
 | `--seeds` | `42,123,456,789,1024` | Comma-separated seeds. A seed that already has `metrics.json` is skipped. |
@@ -271,6 +277,25 @@ Under `--out/<task>/` (default `results/panns_cnn14_linear/<task>/`):
 | `--limit` | `0` (every labelled row) | First N labelled rows of each split. Writes `<--out>/_smoke_<N>/<task>/`. |
 | `--restart` | off | Retrain seeds that already have `metrics.json`. |
 | `--dry-run` | off | Print the label setup and exit. |
+| `--verbose` | off | Write `<--out>/pair/verbose_test.csv` (or `<--out>/_smoke_<N>/pair/` when `--limit` is set). See [Verbose predictions](#verbose-predictions). If `--task` is not `pair`, the pair head is trained as well. |
+
+<a id="verbose-predictions"></a>
+
+#### Verbose predictions
+
+`--verbose` writes one CSV for the test split, `<--out>/pair/verbose_test.csv`.
+Every test row is kept, in the original order. The top 5 come from the pair
+head: average the softmax over seeds, then take the five highest
+`Category||SubCategory` classes. `model_confidence_1` through
+`model_confidence_5` are those class probabilities, written with 6 decimal
+places. `human_category` and
+`human_subcategory` are left blank. `recording` and `pile` are copied when the
+test CSV has them. A row the pair head did not score stays in the file with
+blank prediction and confidence cells.
+
+```powershell
+python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv --task pair --verbose
+```
 
 Point `--embeddings` at an extraction folder and give the probe its own `--out`.
 This writes `results/run_a/subcategory/`:
@@ -282,9 +307,9 @@ python train_linear_probe.py --manifests "E:\Sounds for TA\Extracted\manifests" 
 #### New label set
 
 The cache depends only on the audio and CNN14, so relabeling or resplitting
-needs no extraction. Write the new `envsound_{train,val,test}.csv` to a new
-folder, point `--manifests` at it, keep the same `--embeddings`, and give the
-probe a new `--out`:
+needs no extraction. Pass the three CSVs with `--train`, `--eval`, and `--test`
+(any filenames), keep the same `--embeddings`, and give the probe a new `--out`.
+A folder of `envsound_{train,val,test}.csv` can still be passed with `--manifests`:
 
 ```powershell
 python train_linear_probe.py --manifests "E:\Sounds for TA\Extracted\manifests_v2" --embeddings embeddings/panns_cnn14 --out results/labels_v2

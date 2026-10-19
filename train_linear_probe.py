@@ -27,17 +27,34 @@ Label schemes (--task):
   category      keep every clip; class = Category (59 classes). This is the
                 paper's direct category classifier.
 
-Labels and splits come from the manifests (--manifests), not from the cache.
-Each manifest row (exists not false) is matched to embeddings.npz on
+Labels and splits come from three CSVs, not from the cache. Pass each file
+with --train, --eval, and --test. The filenames can be anything; the flag
+chooses the split. --val is the same flag as --eval. --manifests FOLDER still
+works and looks up envsound_{train,val,test}.csv (or {split}.csv) in that
+folder. Do not pass the folder and the three files together.
+
+Each CSV row (exists not false) is matched to embeddings.npz on
 filename + source. A missing vector or a repeated pair stops the run.
 
-Usage (from this folder, M = the manifests folder):
+Usage (from this folder):
 
-  python train_linear_probe.py --manifests M --dry-run
+  python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv --dry-run
+  python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv
+  python train_linear_probe.py --train a.csv --eval b.csv --test c.csv --task category
   python train_linear_probe.py --manifests M
-  python train_linear_probe.py --manifests M --task category
-  python train_linear_probe.py --manifests M --task pair
-  python train_linear_probe.py --manifests M --limit 200 --seeds 42 --max-epochs 5
+  python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv --limit 200 --seeds 42 --max-epochs 5
+  python train_linear_probe.py --train train.csv --eval eval.csv --test test.csv --task pair --verbose
+
+--verbose writes <out>/pair/verbose_test.csv (under _smoke_<N>/ when --limit
+is set). Every row of the test CSV is kept, in the same order. The top 5
+category and subcategory come from the pair head: average the softmax over
+seeds, then take the five highest Category||SubCategory classes.
+model_confidence_1..5 are those mean class probabilities. human_category
+and human_subcategory are left blank. recording and pile
+are copied when the test CSV has those columns. A row the pair head did not
+score (exists false, empty label, label absent from train, or past --limit)
+keeps blank prediction and confidence cells. If --task is not pair, the pair
+head is trained as well.
 """
 import argparse
 import json
@@ -111,8 +128,10 @@ def find_manifest(folder, split):
     sys.exit(f"No manifest for '{split}' in {folder} (looked for envsound_{split}.csv)")
 
 
-def read_manifest(folder, split):
-    path = find_manifest(folder, split)
+def read_manifest(path):
+    path = Path(path)
+    if not path.is_file():
+        sys.exit(f"Missing manifest {path}")
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
     for col in ("filename", "source", "Category"):
         if col not in df.columns:
@@ -126,8 +145,25 @@ def read_manifest(folder, split):
     return path, df
 
 
-def load_embeddings(emb_dir, manifests_dir):
-    """Join the manifests onto embeddings.npz on filename + source."""
+def resolve_split_files(args):
+    """Map train/val/test to CSV paths. Filenames are not inspected."""
+    explicit = (("--train", args.train), ("--eval", args.eval), ("--test", args.test))
+    given = [flag for flag, path in explicit if path]
+    if args.manifests and given:
+        sys.exit("Pass either --manifests or --train, --eval, and --test, not both.")
+    if args.manifests:
+        return {split: find_manifest(args.manifests, split) for split in ("train", "val", "test")}
+    missing = [flag for flag, path in explicit if not path]
+    if missing:
+        sys.exit(
+            "Pass --manifests, or all of --train, --eval, and --test. "
+            f"Missing: {', '.join(missing)}"
+        )
+    return {"train": Path(args.train), "val": Path(args.eval), "test": Path(args.test)}
+
+
+def load_embeddings(emb_dir, split_files):
+    """Join the split CSVs onto embeddings.npz on filename + source."""
     path = Path(emb_dir) / "embeddings.npz"
     if not path.is_file():
         sys.exit(f"Missing {path}. Run extract_panns_embeddings.py first "
@@ -148,7 +184,7 @@ def load_embeddings(emb_dir, manifests_dir):
         row_of[key] = i
     print(f"  cache {path}  X={tuple(X.shape)}", flush=True)
 
-    frames = {split: read_manifest(manifests_dir, split) for split in ("train", "val", "test")}
+    frames = {split: read_manifest(path) for split, path in split_files.items()}
 
     seen = defaultdict(list)
     for split, (csv_path, df) in frames.items():
@@ -182,6 +218,7 @@ def load_embeddings(emb_dir, manifests_dir):
             "subcategory": df["SubCategory"].to_numpy(dtype=str),
             "source": cache_src[idx],
             "path": df["path"].to_numpy(dtype=str),
+            "csv_line": df["csv_line"].to_numpy(dtype=np.int64),
         }
         print(f"  joined {split:5}  {csv_path}  X={tuple(splits[split]['X'].shape)}", flush=True)
     unused = len(row_of) - len(seen)
@@ -214,7 +251,8 @@ def prepare(raw, task, limit):
         idx = np.flatnonzero(keep)
         if limit:
             idx = idx[:limit]
-        pack = {key: data[key][idx] for key in ("X", "filename", "category", "subcategory", "source", "path")}
+        pack = {key: data[key][idx] for key in (
+            "X", "filename", "category", "subcategory", "source", "path", "csv_line")}
         pack["label"] = labels[idx]
         packs[split] = pack
 
@@ -539,6 +577,7 @@ def train_one_seed(data, seed, device, args, seed_dir):
         category_pred=pred_cat,
         subcategory_true=test["subcategory"],
         classes=np.array(classes),
+        csv_line=test["csv_line"].astype(np.int64),
     )
     torch.save({
         "state_dict": best_state,
@@ -609,6 +648,10 @@ def write_summary(data, records, out_dir, args, device):
         "settings": {
             "embeddings": args.embeddings,
             "manifests": args.manifests,
+            "train": str(args.split_files["train"]),
+            "eval": str(args.split_files["val"]),
+            "test": str(args.split_files["test"]),
+            "verbose": bool(args.verbose),
             "dropout": args.dropout,
             "optimizer": "AdamW",
             "lr": args.lr,
@@ -707,12 +750,158 @@ def describe(data):
         print("  shared names: " + ", ".join(row["name"] for row in ambiguous), flush=True)
 
 
+VERBOSE_PASSTHROUGH = (
+    "filename", "Category", "SubCategory", "Keywords", "source", "path", "exists",
+    "recording", "pile",
+)
+VERBOSE_COLUMNS = (
+    list(VERBOSE_PASSTHROUGH)
+    + [f"model_prediction_{i}_{part}" for i in range(1, 6) for part in ("category", "subcategory")]
+    + [f"model_confidence_{i}" for i in range(1, 6)]
+    + ["human_category", "human_subcategory"]
+)
+
+
+def softmax_rows(logits):
+    z = np.asarray(logits, dtype=np.float64)
+    z = z - z.max(axis=1, keepdims=True)
+    e = np.exp(z)
+    e /= e.sum(axis=1, keepdims=True)
+    return e
+
+
+def load_pair_seed(seed_dir):
+    """Softmax of one pair-head seed, aligned by the test CSV line."""
+    path = Path(seed_dir) / "predictions.npz"
+    if not path.is_file():
+        sys.exit(f"Missing {path}. Retrain this seed with --restart.")
+    with np.load(path, allow_pickle=True) as z:
+        if "csv_line" not in z.files:
+            sys.exit(
+                f"{path} has no csv_line. Retrain this seed with --restart "
+                "so --verbose can match predictions to test rows."
+            )
+        classes = [str(c) for c in np.asarray(z["classes"]).tolist()]
+        lines = np.asarray(z["csv_line"], dtype=np.int64)
+        logits = np.asarray(z["logits"], dtype=np.float64)
+    if logits.ndim != 2 or len(lines) != len(logits):
+        sys.exit(f"{path} has logits {tuple(logits.shape)} for {len(lines)} test rows")
+    if any("||" not in name for name in classes):
+        sys.exit(f"{path} is not a pair-head probe. Class names have no '||'.")
+    if len(classes) != logits.shape[1]:
+        sys.exit(f"{path} has {len(classes)} classes and logits width {logits.shape[1]}")
+    return classes, lines, softmax_rows(logits)
+
+
+def mean_pair_topk(seed_dirs, k=5):
+    """Average pair-head softmax over seeds and return the top k class indices."""
+    loaded = [load_pair_seed(path) for path in seed_dirs]
+    classes, lines, _ = loaded[0]
+    for classes_i, lines_i, _ in loaded[1:]:
+        if classes_i != classes:
+            sys.exit("Pair seeds have different class lists, so their softmax cannot be averaged.")
+        if not np.array_equal(lines_i, lines):
+            sys.exit("Pair seeds scored different test rows, so their softmax cannot be averaged.")
+    if len(set(int(line) for line in lines)) != len(lines):
+        sys.exit("Pair predictions repeat a test CSV line.")
+    mean = np.stack([probs for _, _, probs in loaded], axis=0).mean(axis=0)
+    k_eff = min(k, mean.shape[1])
+    order = np.argsort(-mean, axis=1, kind="mergesort")[:, :k_eff]
+    by_line = {}
+    for row, line in enumerate(lines):
+        preds = []
+        confs = []
+        for rank in range(k):
+            if rank >= k_eff:
+                preds.append(("", ""))
+                confs.append("")
+                continue
+            cls = int(order[row, rank])
+            cat, sub = classes[cls].split("||", 1)
+            preds.append((cat, sub))
+            confs.append(f"{mean[row, cls]:.6f}")
+        by_line[int(line)] = (preds, confs)
+    return by_line
+
+
+def write_verbose_test_csv(test_csv, seed_dirs, dest):
+    """One row per test-CSV row. Unscored rows keep blank prediction cells."""
+    by_line = mean_pair_topk(seed_dirs)
+    raw = pd.read_csv(test_csv, dtype=str, keep_default_na=False)
+    raw["_csv_line"] = np.arange(len(raw)) + 2
+    file_lines = {int(line) for line in raw["_csv_line"]}
+    missing = [line for line in by_line if line not in file_lines]
+    if missing:
+        sys.exit(
+            f"{len(missing)} scored test row(s) are not in {test_csv}. "
+            "The pair checkpoints were trained on a different file."
+        )
+    rows = []
+    filled = 0
+    for record in raw.to_dict("records"):
+        out = {col: "" for col in VERBOSE_COLUMNS}
+        for col in VERBOSE_PASSTHROUGH:
+            if col in record:
+                out[col] = record[col]
+        hit = by_line.get(int(record["_csv_line"]))
+        if hit is not None:
+            filled += 1
+            preds, confs = hit
+            for i, ((cat, sub), conf) in enumerate(zip(preds, confs), start=1):
+                out[f"model_prediction_{i}_category"] = cat
+                out[f"model_prediction_{i}_subcategory"] = sub
+                out[f"model_confidence_{i}"] = conf
+        rows.append(out)
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows, columns=VERBOSE_COLUMNS).to_csv(dest, index=False, encoding="utf-8")
+    return len(rows), filled
+
+
+def note_verbose_csv(summary_path, csv_path, n_rows, n_filled):
+    summary_path = Path(summary_path)
+    if not summary_path.is_file():
+        return
+    with open(summary_path, encoding="utf-8") as f:
+        summary = json.load(f)
+    summary["verbose_test_csv"] = str(csv_path)
+    summary["verbose_rule"] = (
+        "Top 5 are the pair-head classes with the highest mean softmax over seeds. "
+        "model_confidence_k is that class probability, written with 6 decimal places. "
+        "Rows the pair head did not score have blank prediction and confidence cells."
+    )
+    summary["verbose_rows"] = {"test": n_rows, "with_predictions": n_filled}
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+
+def task_output_dir(args, task):
+    out_dir = Path(args.out)
+    if args.limit:
+        out_dir = out_dir / f"_smoke_{args.limit}"
+    return out_dir / task
+
+
+def train_task(data, args, device, seeds, out_dir):
+    print(f"Writing {out_dir}", flush=True)
+    records = []
+    for seed in seeds:
+        records.append(train_one_seed(data, seed, device, args, out_dir / f"seed_{seed}"))
+    summary = write_summary(data, records, out_dir, args, device)
+    print_summary(summary)
+    print(f"Wrote {out_dir / 'summary.json'}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--embeddings", default="embeddings/panns_cnn14",
                         help="folder holding embeddings.npz from the extractor")
-    parser.add_argument("--manifests", required=True,
-                        help="folder with envsound_{train,val,test}.csv; labels and splits come from here")
+    parser.add_argument("--manifests", default=None,
+                        help="folder with envsound_{train,val,test}.csv. Alternative to --train/--eval/--test")
+    parser.add_argument("--train", default=None, help="training CSV. Any filename")
+    parser.add_argument("--eval", "--val", dest="eval", default=None,
+                        help="validation CSV, used for early stopping. Any filename. --val is the same flag")
+    parser.add_argument("--test", default=None, help="test CSV, scored once per seed. Any filename")
     parser.add_argument("--out", default="results/panns_cnn14_linear")
     parser.add_argument("--task", choices=("subcategory", "category", "pair"), default="subcategory")
     parser.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
@@ -727,6 +916,12 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="first N labelled rows per split (smoke test)")
     parser.add_argument("--restart", action="store_true", help="retrain seeds that already have metrics.json")
     parser.add_argument("--dry-run", action="store_true", help="print the label setup and exit")
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="write <out>/pair/verbose_test.csv with the top 5 pair-head predictions "
+             "for every test row. Probabilities are the mean softmax over seeds. "
+             "Trains the pair head as well when --task is not pair",
+    )
     args = parser.parse_args()
 
     if args.device == "auto":
@@ -743,26 +938,42 @@ def main():
         sys.exit("pass at least one seed")
 
     print(f"Device: {device}", flush=True)
-    raw = load_embeddings(args.embeddings, args.manifests)
+    args.split_files = resolve_split_files(args)
+    raw = load_embeddings(args.embeddings, args.split_files)
     data = prepare(raw, args.task, args.limit)
+    pair_data = prepare(raw, "pair", args.limit) if args.verbose and args.task != "pair" else None
     del raw
     describe(data)
     if args.dry_run:
+        if pair_data is not None:
+            print("Verbose predictions use the pair head:", flush=True)
+            describe(pair_data)
         print("Dry run: no training.", flush=True)
+        if args.verbose:
+            print("No verbose_test.csv on a dry run.", flush=True)
         return
 
-    out_dir = Path(args.out)
-    if args.limit:
-        out_dir = out_dir / f"_smoke_{args.limit}"
-    out_dir = out_dir / args.task
-    print(f"Writing {out_dir}", flush=True)
-
-    records = []
-    for seed in seeds:
-        records.append(train_one_seed(data, seed, device, args, out_dir / f"seed_{seed}"))
-    summary = write_summary(data, records, out_dir, args, device)
-    print_summary(summary)
-    print(f"Wrote {out_dir / 'summary.json'}", flush=True)
+    train_task(data, args, device, seeds, task_output_dir(args, args.task))
+    if not args.verbose:
+        return
+    if pair_data is not None:
+        print("Verbose predictions use the pair head. Training that probe as well.", flush=True)
+        describe(pair_data)
+        pair_dir = task_output_dir(args, "pair")
+        train_task(pair_data, args, device, seeds, pair_dir)
+    else:
+        pair_dir = task_output_dir(args, "pair")
+    dest = pair_dir / "verbose_test.csv"
+    n_rows, n_filled = write_verbose_test_csv(
+        args.split_files["test"],
+        [pair_dir / f"seed_{seed}" for seed in seeds],
+        dest,
+    )
+    note_verbose_csv(pair_dir / "summary.json", dest, n_rows, n_filled)
+    print(
+        f"Wrote {dest}  ({n_filled} of {n_rows} test rows have a top-5 prediction)",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
