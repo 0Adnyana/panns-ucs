@@ -23,12 +23,13 @@ Background lives in [docs/](docs/README.md).
 
 ## Getting started
 
-How to install, extract embeddings, train the linear probe, and open the demo.
-Run the scripts from this repo folder in PowerShell. Extract once, then train
-on the cached file. The cache holds no labels: the probe joins the manifests
-onto it, so a new label set does not need a new extraction.
+How to install, extract embeddings, train the linear probe, open the web
+trainer, and open the demo. Run the scripts from this repo folder in
+PowerShell. Extract once, then train on the cached file. The cache holds no
+labels: the probe joins the manifests onto it, so a new label set does not
+need a new extraction.
 
-**On this page:** [Install](#install) · [Checkpoint](#checkpoint) · [Extract](#extract) · [Extract flags](#extract-flags) · [Combine old caches](#combine-old-caches) · [Train](#train) · [Train flags](#train-flags) · [New label set](#new-label-set) · [Demo](#demo)
+**On this page:** [Install](#install) · [Checkpoint](#checkpoint) · [Extract](#extract) · [Extract flags](#extract-flags) · [Combine old caches](#combine-old-caches) · [Train](#train) · [Train flags](#train-flags) · [New label set](#new-label-set) · [Web trainer](#web-trainer) · [Demo](#demo)
 
 
 
@@ -327,6 +328,29 @@ and point `--embeddings` there.
 
 The 5-seed EnvSound scores are in [Results](docs/results.md#results). What to check
 in those files is in [evaluation checks](docs/results.md#evaluation).
+
+
+
+### Web trainer
+
+`web/app.py` runs the extractor and the linear probe from one page on this
+machine. It starts those scripts and shows their output. Paths are folders on
+this machine, the same ones you would pass on the command line. One job runs
+at a time. Stopping an extraction leaves `embeddings.partial.npz`, so the same
+settings continue it. The probe still skips a seed that already has
+`metrics.json`.
+
+```powershell
+python web/app.py
+```
+
+The script prints the URL (default `http://127.0.0.1:8766`). It uses the
+packages already listed in `requirements.txt`.
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | |
+| `--port` | `8766` | |
 
 
 

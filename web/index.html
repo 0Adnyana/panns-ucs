@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Extract and train</title>
+  <style>
+    :root {
+      --bg: #f3f0e8;
+      --ink: #1b1914;
+      --muted: #6d675e;
+      --line: #d4cec3;
+      --paper: #fffdf8;
+      --mark: #1f4d3a;
+      --err: #8a2b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.45 "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 46rem;
+      margin: 0 auto;
+      padding: 3rem 1.25rem 4rem;
+    }
+    .eyebrow {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0.2rem 0 0; font-size: 1.75rem; font-weight: 600; }
+    .lede { margin: 0.75rem 0 0; color: var(--muted); }
+    .tabs { display: flex; gap: 0.4rem; margin-top: 1.5rem; }
+    .tabs button {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.28rem 0.85rem;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      cursor: pointer;
+    }
+    .tabs button[aria-selected="true"] {
+      background: var(--paper);
+      border-color: var(--mark);
+      color: var(--ink);
+    }
+    .panel {
+      margin-top: 0.8rem;
+      padding: 1.1rem 1.15rem 1.15rem;
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+      background: var(--paper);
+    }
+    .field { margin-top: 0.85rem; }
+    .field label, .choice-label {
+      display: block;
+      margin: 0 0 0.35rem;
+      color: var(--muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    input[type="text"], select {
+      width: 100%;
+      padding: 0.45rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+    }
+    input:focus, select:focus { border-color: var(--mark); outline: none; }
+    input:disabled, select:disabled { opacity: 0.55; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 1rem;
+    }
+    .hint { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    .choice { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
+    .choice label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 1rem;
+      color: var(--ink);
+    }
+    .check {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      margin-top: 0.8rem;
+    }
+    .check input { margin-top: 0.28rem; }
+    details { margin-top: 0.95rem; }
+    summary { cursor: pointer; color: var(--muted); }
+    button.primary {
+      margin-top: 1rem;
+      padding: 0.5rem 0.95rem;
+      border: 0;
+      border-radius: 0.5rem;
+      background: var(--mark);
+      color: #fffdf8;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary:disabled, button.ghost:disabled { opacity: 0.55; cursor: default; }
+    .console { margin-top: 1.35rem; }
+    .console-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }
+    #job-status { margin: 0; min-height: 1.45rem; }
+    #job-status.err { color: var(--err); }
+    #job-status.ok { color: var(--mark); }
+    button.ghost {
+      border: 1px solid var(--line);
+      border-radius: 0.5rem;
+      padding: 0.3rem 0.75rem;
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+    #log {
+      margin: 0.5rem 0 0;
+      min-height: 8rem;
+      max-height: 22rem;
+      overflow: auto;
+      padding: 0.8rem 0.9rem;
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+      background: var(--paper);
+      color: var(--ink);
+      font: 0.82rem/1.45 Consolas, "Cascadia Mono", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .foot { margin: 1.25rem 0 0; color: var(--muted); font-size: 0.85rem; }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Trainer</p>
+    <h1>Extract and train</h1>
+    <p class="lede">Frozen CNN14 embeddings, then a linear probe. This page runs the same scripts as the command line. Paths are on this machine. One job runs at a time.</p>
+
+    <div class="tabs" role="tablist">
+      <button type="button" id="tab-extract" role="tab" aria-selected="true" aria-controls="extract">Extract</button>
+      <button type="button" id="tab-train" role="tab" aria-selected="false" aria-controls="train">Train</button>
+    </div>
+
+    <form id="extract" class="panel" role="tabpanel">
+      <div class="field">
+        <label for="ex-manifests">Manifests</label>
+        <input id="ex-manifests" name="manifests" type="text" required placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
+        <p class="hint">A folder of envsound_{train,val,test}.csv, or one CSV.</p>
+      </div>
+      <div class="field">
+        <label for="ex-audio">Audio root</label>
+        <input id="ex-audio" name="audio_root" type="text" placeholder="E:\Sounds for TA\Extracted" spellcheck="false">
+        <p class="hint">Base for relative paths. Leave empty to use the parent of the manifests folder.</p>
+      </div>
+      <div class="grid">
+        <div class="field">
+          <label for="ex-out">Output folder</label>
+          <input id="ex-out" name="out" type="text" list="embedding-dirs" value="embeddings/panns_cnn14" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="ex-device">Device</label>
+          <select id="ex-device" name="device">
+            <option value="auto" selected>auto</option>
+            <option value="cuda">cuda</option>
+            <option value="cpu">cpu</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="ex-limit">Row limit</label>
+        <input id="ex-limit" name="limit" type="text" value="0" inputmode="numeric" spellcheck="false">
+        <p class="hint">0 embeds every row. A small number writes a _smoke_ folder.</p>
+      </div>
+      <details id="extract-advanced">
+        <summary>Advanced</summary>
+        <div class="field">
+          <label for="ex-checkpoint">Checkpoint</label>
+          <input id="ex-checkpoint" name="checkpoint" type="text" placeholder="models/Cnn14_mAP=0.431.pth" spellcheck="false">
+          <p class="hint">Leave empty for models/Cnn14_mAP=0.431.pth. A missing file is downloaded there.</p>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="ex-splits">Splits</label>
+            <input id="ex-splits" name="splits" type="text" value="train,val,test" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="ex-save">Save every</label>
+            <input id="ex-save" name="save_every" type="text" value="2000" inputmode="numeric" spellcheck="false">
+          </div>
+        </div>
+        <label class="check">
+          <input id="ex-restart" name="restart" type="checkbox">
+          <span>Start over. Ignore saved progress and embed from the first clip.</span>
+        </label>
+        <label class="check">
+          <input id="ex-combine" name="combine" type="checkbox">
+          <span>Combine old per-split caches into one embeddings.npz. CNN14 stays unloaded.</span>
+        </label>
+        <div class="field" id="combine-field" hidden>
+          <label for="ex-combine-from">Combine from</label>
+          <input id="ex-combine-from" name="combine_from" type="text" list="embedding-dirs" spellcheck="false">
+        </div>
+      </details>
+      <button class="primary" id="extract-submit" type="submit">Extract embeddings</button>
+    </form>
+
+    <form id="train" class="panel" role="tabpanel" hidden>
+      <div class="field">
+        <label for="tr-embeddings">Embeddings</label>
+        <input id="tr-embeddings" name="embeddings" type="text" list="embedding-dirs" value="embeddings/panns_cnn14" required spellcheck="false">
+        <p class="hint">Folder that holds embeddings.npz. This is the extractor output.</p>
+      </div>
+      <div class="field">
+        <span class="choice-label">Labels</span>
+        <div class="choice">
+          <label><input type="radio" name="manifest_mode" value="folder" checked> Manifest folder</label>
+          <label><input type="radio" name="manifest_mode" value="files"> Three CSV files</label>
+        </div>
+      </div>
+      <div id="train-folder">
+        <div class="field">
+          <label for="tr-manifests">Manifests</label>
+          <input id="tr-manifests" name="manifests" type="text" required placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
+        </div>
+      </div>
+      <div id="train-files" hidden>
+        <div class="field">
+          <label for="tr-train">Training CSV</label>
+          <input id="tr-train" name="train" type="text" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="tr-eval">Validation CSV</label>
+          <input id="tr-eval" name="eval" type="text" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="tr-test">Test CSV</label>
+          <input id="tr-test" name="test" type="text" spellcheck="false">
+        </div>
+      </div>
+      <div class="grid">
+        <div class="field">
+          <label for="tr-task">Task</label>
+          <select id="tr-task" name="task">
+            <option value="subcategory" selected>subcategory</option>
+            <option value="pair">pair</option>
+            <option value="category">category</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="tr-device">Device</label>
+          <select id="tr-device" name="device">
+            <option value="auto" selected>auto</option>
+            <option value="cuda">cuda</option>
+            <option value="cpu">cpu</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="tr-out">Output folder</label>
+          <input id="tr-out" name="out" type="text" list="result-dirs" value="results/panns_cnn14_linear" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="tr-seeds">Seeds</label>
+          <input id="tr-seeds" name="seeds" type="text" value="42,123,456,789,1024" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="tr-epochs">Max epochs</label>
+          <input id="tr-epochs" name="max_epochs" type="text" value="200" inputmode="numeric" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="tr-limit">Row limit</label>
+          <input id="tr-limit" name="limit" type="text" value="0" inputmode="numeric" spellcheck="false">
+        </div>
+      </div>
+      <p class="hint">0 uses every labelled row. A small number writes a _smoke_ folder. Files land in the output folder, then the task name.</p>
+      <label class="check">
+        <input id="tr-dry" name="dry_run" type="checkbox">
+        <span>Dry run. Print the label setup and stop before training.</span>
+      </label>
+      <details>
+        <summary>Advanced</summary>
+        <div class="grid">
+          <div class="field">
+            <label for="tr-batch">Batch size</label>
+            <input id="tr-batch" name="batch_size" type="text" value="256" inputmode="numeric" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="tr-lr">Learning rate</label>
+            <input id="tr-lr" name="lr" type="text" value="1e-3" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="tr-wd">Weight decay</label>
+            <input id="tr-wd" name="weight_decay" type="text" value="1e-3" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="tr-drop">Dropout</label>
+            <input id="tr-drop" name="dropout" type="text" value="0.3" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="tr-gamma">Focal gamma</label>
+            <input id="tr-gamma" name="gamma" type="text" value="2" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="tr-patience">Patience</label>
+            <input id="tr-patience" name="patience" type="text" value="20" inputmode="numeric" spellcheck="false">
+          </div>
+        </div>
+        <label class="check">
+          <input id="tr-restart" name="restart" type="checkbox">
+          <span>Retrain seeds that already have metrics.json.</span>
+        </label>
+        <label class="check">
+          <input id="tr-verbose" name="verbose" type="checkbox">
+          <span>Write verbose_test.csv. Top 5 come from the pair head, averaged over seeds.</span>
+        </label>
+      </details>
+      <button class="primary" id="train-submit" type="submit">Train probe</button>
+    </form>
+
+    <section class="console" id="console">
+      <div class="console-bar">
+        <p id="job-status" role="status">Idle</p>
+        <button class="ghost" id="stop" type="button" disabled>Stop</button>
+      </div>
+      <pre id="log"></pre>
+    </section>
+    <p class="foot" id="foot">Runs extract_panns_embeddings.py and train_linear_probe.py.</p>
+  </main>
+  <datalist id="embedding-dirs"></datalist>
+  <datalist id="result-dirs"></datalist>
+  <script>
+    const extractForm = document.getElementById("extract");
+    const trainForm = document.getElementById("train");
+    const tabExtract = document.getElementById("tab-extract");
+    const tabTrain = document.getElementById("tab-train");
+    const statusEl = document.getElementById("job-status");
+    const logEl = document.getElementById("log");
+    const stopBtn = document.getElementById("stop");
+    const extractSubmit = document.getElementById("extract-submit");
+    const trainSubmit = document.getElementById("train-submit");
+    const foot = document.getElementById("foot");
+
+    let pollGen = 0;
+    let next = 0;
+    let shownId = 0;
+    let pollTimer = 0;
+
+    function collect(form, includeDisabled) {
+      const data = {};
+      for (const el of form.elements) {
+        if (!el.name || (el.disabled && !includeDisabled)) continue;
+        if (el.type === "checkbox") data[el.name] = el.checked;
+        else if (el.type === "radio") {
+          if (el.checked) data[el.name] = el.value;
+        } else data[el.name] = el.value.trim();
+      }
+      return data;
+    }
+
+    function payload(form) {
+      return collect(form, false);
+    }
+
+    function saveForm(form) {
+      localStorage.setItem("ucs-" + form.id, JSON.stringify(collect(form, true)));
+    }
+
+    function restoreForm(form) {
+      let data;
+      try {
+        data = JSON.parse(localStorage.getItem("ucs-" + form.id) || "null");
+      } catch (err) {
+        return;
+      }
+      if (!data || typeof data !== "object") return;
+      for (const [key, value] of Object.entries(data)) {
+        const el = form.elements[key];
+        if (!el || value == null) continue;
+        if (el.type === "checkbox") el.checked = Boolean(value);
+        else el.value = value;
+      }
+    }
+
+    function fillList(id, values) {
+      const list = document.getElementById(id);
+      list.replaceChildren();
+      (values || []).forEach((value) => {
+        const opt = document.createElement("option");
+        opt.value = value;
+        list.append(opt);
+      });
+    }
+
+    function syncExtract() {
+      const on = extractForm.elements.combine.checked;
+      ["manifests", "audio_root", "device", "limit", "checkpoint", "save_every", "restart"].forEach((name) => {
+        extractForm.elements[name].disabled = on;
+      });
+      extractForm.elements.manifests.required = !on;
+      extractForm.elements.combine_from.disabled = !on;
+      extractForm.elements.combine_from.required = on;
+      document.getElementById("combine-field").hidden = !on;
+      if (on) document.getElementById("extract-advanced").open = true;
+      extractSubmit.textContent = on ? "Combine caches" : "Extract embeddings";
+    }
+
+    function syncTrain() {
+      const files = trainForm.elements.manifest_mode.value === "files";
+      document.getElementById("train-folder").hidden = files;
+      document.getElementById("train-files").hidden = !files;
+      trainForm.elements.manifests.disabled = files;
+      trainForm.elements.manifests.required = !files;
+      ["train", "eval", "test"].forEach((name) => {
+        trainForm.elements[name].disabled = !files;
+        trainForm.elements[name].required = files;
+      });
+      trainSubmit.textContent = trainForm.elements.dry_run.checked ? "Check labels" : "Train probe";
+    }
+
+    function showTab(which) {
+      const extract = which === "extract";
+      extractForm.hidden = !extract;
+      trainForm.hidden = extract;
+      tabExtract.setAttribute("aria-selected", extract ? "true" : "false");
+      tabTrain.setAttribute("aria-selected", extract ? "false" : "true");
+      localStorage.setItem("ucs-tab", which);
+    }
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle("err", kind === "err");
+      statusEl.classList.toggle("ok", kind === "ok");
+    }
+
+    function statusText(job) {
+      if (job.status === "running") {
+        if (job.kind === "combine") return "Combining caches…";
+        if (job.kind === "train") return "Training the probe…";
+        if (job.kind === "dry-run") return "Checking the label setup…";
+        return "Extracting embeddings…";
+      }
+      if (job.status === "done") return "Finished";
+      if (job.status === "stopped") return "Stopped";
+      if (job.status === "failed") {
+        const code = job.returncode == null ? "" : " · exit " + job.returncode;
+        return "Failed" + code;
+      }
+      return "Idle";
+    }
+
+    function appendLines(lines, replace) {
+      const nearBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48;
+      if (replace) logEl.textContent = "";
+      if (lines && lines.length) {
+        const block = lines.join("\n");
+        logEl.textContent += logEl.textContent && !replace ? "\n" + block : block;
+      }
+      if (replace || nearBottom) logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function applyJob(job) {
+      const replace = Boolean(job.skipped) || job.id !== shownId;
+      if (replace) logEl.textContent = "";
+      shownId = job.id || 0;
+      appendLines(job.lines, false);
+      next = job.next || 0;
+      const running = job.status === "running";
+      extractSubmit.disabled = running;
+      trainSubmit.disabled = running;
+      stopBtn.disabled = !running;
+      const kind = job.status === "failed" ? "err" : (job.status === "done" ? "ok" : "");
+      setStatus(statusText(job), kind);
+    }
+
+    async function readJson(res) {
+      try {
+        return await res.json();
+      } catch (err) {
+        throw new Error("The page received an unreadable response.");
+      }
+    }
+
+    async function poll() {
+      const gen = pollGen;
+      let job;
+      try {
+        const res = await fetch("/api/job?after=" + next);
+        job = await readJson(res);
+      } catch (err) {
+        if (gen !== pollGen) return;
+        setStatus(err.message || "The page lost the job log.", "err");
+        pollTimer = setTimeout(poll, 1000);
+        return;
+      }
+      if (gen !== pollGen) return;
+      applyJob(job);
+      if (job.status === "running") pollTimer = setTimeout(poll, 400);
+    }
+
+    async function start(url, form) {
+      if (extractSubmit.disabled) return;
+      const gen = ++pollGen;
+      clearTimeout(pollTimer);
+      saveForm(form);
+      setStatus("Starting…", "");
+      let job;
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload(form)),
+        });
+        job = await readJson(res);
+        if (res.status === 409) {
+          setStatus(job.error || "A job is already running.", "err");
+          poll();
+          return;
+        }
+        if (!res.ok) throw new Error(job.error || "Could not start.");
+      } catch (err) {
+        if (gen !== pollGen) return;
+        setStatus(err.message || "Could not start.", "err");
+        return;
+      }
+      if (gen !== pollGen) return;
+      next = 0;
+      shownId = 0;
+      logEl.textContent = "";
+      applyJob(job);
+      document.getElementById("console").scrollIntoView({ block: "nearest" });
+      if (job.status === "running") pollTimer = setTimeout(poll, 400);
+    }
+
+    tabExtract.addEventListener("click", () => showTab("extract"));
+    tabTrain.addEventListener("click", () => showTab("train"));
+    extractForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      start("/api/extract", extractForm);
+    });
+    trainForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      start("/api/train", trainForm);
+    });
+    extractForm.addEventListener("input", () => saveForm(extractForm));
+    trainForm.addEventListener("input", () => saveForm(trainForm));
+    extractForm.addEventListener("change", () => saveForm(extractForm));
+    trainForm.addEventListener("change", () => saveForm(trainForm));
+    extractForm.elements.combine.addEventListener("change", syncExtract);
+    trainForm.elements.manifest_mode.forEach((el) => el.addEventListener("change", syncTrain));
+    trainForm.elements.dry_run.addEventListener("change", syncTrain);
+    stopBtn.addEventListener("click", async () => {
+      stopBtn.disabled = true;
+      try {
+        const res = await fetch("/api/stop", { method: "POST" });
+        const job = await readJson(res);
+        if (!res.ok) throw new Error(job.error || "Could not stop.");
+        next = 0;
+        shownId = 0;
+        logEl.textContent = "";
+        applyJob(job);
+      } catch (err) {
+        setStatus(err.message || "Could not stop.", "err");
+      }
+      poll();
+    });
+
+    restoreForm(extractForm);
+    restoreForm(trainForm);
+    syncExtract();
+    syncTrain();
+    showTab(localStorage.getItem("ucs-tab") === "train" ? "train" : "extract");
+    poll();
+
+    fetch("/api/info").then(readJson).then((info) => {
+      fillList("embedding-dirs", info.embedding_dirs);
+      fillList("result-dirs", info.result_dirs);
+      const bits = ["Runs extract_panns_embeddings.py and train_linear_probe.py."];
+      if (info.torch_error) bits.push(info.torch_error);
+      else if (info.cuda) bits.push("CUDA is available" + (info.gpu ? " · " + info.gpu : "") + ".");
+      else bits.push("CUDA is not available. A full extraction on CPU takes several hours.");
+      foot.textContent = bits.join(" ");
+    }).catch(() => {
+      foot.textContent = "The page could not read the machine status.";
+    });
+  </script>
+</body>
+</html>
