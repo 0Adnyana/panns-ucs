@@ -337,11 +337,35 @@ def class_weights(y, n_classes):
     return torch.tensor(weights, dtype=torch.float32), counts
 
 
+def mps_is_available():
+    mps = getattr(torch.backends, "mps", None)
+    return mps is not None and mps.is_available()
+
+
+def resolve_device(requested):
+    """CUDA, then MPS, then CPU. An explicit device must actually be present."""
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if mps_is_available():
+            return "mps"
+        return "cpu"
+    if requested == "cuda" and not torch.cuda.is_available():
+        sys.exit("CUDA was requested, but torch.cuda.is_available() is False.")
+    if requested == "mps" and not mps_is_available():
+        sys.exit("MPS was requested, but torch.backends.mps.is_available() is False.")
+    if requested not in ("cuda", "mps", "cpu"):
+        sys.exit(f"unknown device {requested!r}")
+    return requested
+
+
 def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if mps_is_available():
+        torch.mps.manual_seed(seed)
 
 
 def topk_accuracy(logits, y, k):
@@ -905,7 +929,7 @@ def main():
     parser.add_argument("--out", default="results/panns_cnn14_linear")
     parser.add_argument("--task", choices=("subcategory", "category", "pair"), default="subcategory")
     parser.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
-    parser.add_argument("--device", default="auto", help="auto, cuda, or cpu")
+    parser.add_argument("--device", default="auto", help="auto, cuda, mps, or cpu")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-3)
@@ -924,14 +948,7 @@ def main():
     )
     args = parser.parse_args()
 
-    if args.device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device = args.device
-    if device == "cuda" and not torch.cuda.is_available():
-        sys.exit("CUDA was requested, but torch.cuda.is_available() is False.")
-    if device not in ("cuda", "cpu"):
-        sys.exit(f"unknown device {device!r}")
+    device = resolve_device(args.device)
 
     seeds = [int(part) for part in args.seeds.split(",") if part.strip()]
     if not seeds:

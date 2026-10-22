@@ -2,9 +2,9 @@
 Local page for embedding extraction and the linear probe.
 
 One page, on this machine. It starts extract_panns_embeddings.py and
-train_linear_probe.py and shows their output. Paths are folders on this
-machine, the same ones the scripts take on the command line. One job runs
-at a time.
+train_linear_probe.py and shows their output. Click a path field and choose
+the folder or file in Finder or File Explorer. The scripts get the same
+paths they take on the command line. One job runs at a time.
 
     python web/app.py
 
@@ -36,6 +36,7 @@ DEFAULT_SEEDS = "42,123,456,789,1024"
 DEFAULT_SPLITS = "train,val,test"
 MAX_LOG = 4000
 MAX_BODY = 64 * 1024
+PICK_LOCK = threading.Lock()
 SAFE_TOKEN = re.compile(r"[A-Za-z0-9_./\\:=,+@-]+")
 
 
@@ -205,7 +206,7 @@ def build_train(body):
         raise JobError(f"No embeddings.npz in {embeddings}. Extract embeddings first.")
     out = output_dir(text_field(body, "out", "Output folder", default=DEFAULT_TRAIN_OUT), "Output folder")
     task = choice_field(body, "task", "Task", ("subcategory", "category", "pair"), "subcategory")
-    device = choice_field(body, "device", "Device", ("auto", "cuda", "cpu"), "auto")
+    device = choice_field(body, "device", "Device", ("auto", "cuda", "mps", "cpu"), "auto")
     seeds = parse_seeds(body.get("seeds") or DEFAULT_SEEDS)
     mode = choice_field(body, "manifest_mode", "Manifests", ("folder", "files"), "folder")
     cmd = [
@@ -251,6 +252,165 @@ def rel(path):
         return str(path)
 
 
+def start_dir(raw):
+    text = clean(raw)
+    path = Path.home() if not text else resolve(text)
+    if path.is_file():
+        path = path.parent
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    if not path.is_dir():
+        path = Path.home()
+    return path
+
+
+def tidy_pick(text):
+    text = (text or "").strip().strip("\ufeff")
+    if text in ("", "/", "\\"):
+        return "/" if text == "/" else text
+    if len(text) == 3 and text[1:2] == ":" and text[2:3] in "\\/":
+        return text
+    return text.rstrip("\\/")
+
+
+MAC_PICK = r'''
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+on run argv
+    set startPath to item 1 of argv
+    set promptText to item 2 of argv
+    set mode to item 3 of argv
+    set chooseFiles to (mode is "file" or mode is "any")
+    set chooseDirs to (mode is "dir" or mode is "any")
+    set makeDirs to mode is not "file"
+    -- osascript is a background process. Without an activation policy the
+    -- panel is created behind the browser and never comes forward.
+    set appObj to current application's NSApplication's sharedApplication()
+    appObj's setActivationPolicy:(current application's NSApplicationActivationPolicyAccessory)
+    set panel to current application's NSOpenPanel's openPanel()
+    tell panel
+        its setCanChooseFiles:chooseFiles
+        its setCanChooseDirectories:chooseDirs
+        its setAllowsMultipleSelection:false
+        its setCanCreateDirectories:makeDirs
+        its setPrompt:"Choose"
+        its setMessage:promptText
+    end tell
+    if startPath is not "" then
+        set startURL to (current application's NSURL's fileURLWithPath:startPath)
+        panel's setDirectoryURL:startURL
+    end if
+    appObj's activateIgnoringOtherApps:true
+    set response to panel's runModal()
+    if (response as integer) is not 1 then return ""
+    set pickedURL to panel's |URL|()
+    return (pickedURL's |path|()) as text
+end run
+'''
+
+WIN_PICK = r'''
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$start = $env:PANNS_PICK_START
+$title = $env:PANNS_PICK_TITLE
+$kind = $env:PANNS_PICK_KIND
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.Opacity = 0
+$owner.Show() | Out-Null
+try {
+    if ($kind -eq "file") {
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = $title
+        $dialog.CheckFileExists = $true
+        $dialog.Filter = "All files (*.*)|*.*"
+        if ($start -and (Test-Path -LiteralPath $start)) {
+            $dialog.InitialDirectory = (Resolve-Path -LiteralPath $start).Path
+        }
+        if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+            Write-Output $dialog.FileName
+        }
+    } else {
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        $dialog.Description = $title
+        $dialog.ShowNewFolderButton = $true
+        if ($start -and (Test-Path -LiteralPath $start)) {
+            $dialog.SelectedPath = (Resolve-Path -LiteralPath $start).Path
+        }
+        if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+            Write-Output $dialog.SelectedPath
+        }
+    }
+} finally {
+    $owner.Close()
+    $owner.Dispose()
+}
+'''
+
+
+def run_dialog(cmd, script=None, env=None):
+    try:
+        done = subprocess.run(
+            cmd,
+            input=script,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            check=False,
+        )
+    except OSError as ex:
+        raise JobError(f"Could not open the file window. {ex}") from None
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip().splitlines()
+        extra = detail[-1] if detail else ""
+        if len(extra) > 160:
+            extra = extra[:160]
+        message = "Could not open the file window."
+        if extra:
+            message = f"{message} {extra}"
+        raise JobError(message)
+    return tidy_pick(done.stdout)
+
+
+def native_pick(start, title, kind):
+    if sys.platform == "darwin":
+        return run_dialog(["osascript", "-", str(start), title, kind], MAC_PICK)
+    if os.name == "nt":
+        env = os.environ.copy()
+        env["PANNS_PICK_START"] = str(start)
+        env["PANNS_PICK_TITLE"] = title
+        env["PANNS_PICK_KIND"] = "file" if kind == "file" else "dir"
+        return run_dialog(
+            ["powershell", "-STA", "-NoProfile", "-Command", "-"],
+            WIN_PICK,
+            env,
+        )
+    raise JobError("This page opens Finder or File Explorer. This machine has neither.")
+
+
+def pick_path(body):
+    kind = choice_field(body, "kind", "Choose", ("dir", "file", "any"), "dir")
+    title = text_field(body, "title", "Title", default="Choose")
+    if len(title) > 80:
+        title = title[:80]
+    start = start_dir(body.get("path"))
+    if not PICK_LOCK.acquire(blocking=False):
+        raise JobError("A file window is already open.", 409)
+    try:
+        chosen = native_pick(start, title, kind)
+    finally:
+        PICK_LOCK.release()
+    if not chosen:
+        return {"cancelled": True, "value": ""}
+    return {"cancelled": False, "value": rel(chosen)}
+
+
 def embedding_dirs():
     root = ROOT / "embeddings"
     if not root.is_dir():
@@ -271,14 +431,16 @@ def cuda_status():
     try:
         import torch
     except Exception as ex:
-        return {"cuda": False, "gpu": "", "torch_error": f"{type(ex).__name__}: {ex}"}
+        return {"cuda": False, "mps": False, "gpu": "", "torch_error": f"{type(ex).__name__}: {ex}"}
+    mps = getattr(torch.backends, "mps", None)
+    mps_ok = mps is not None and mps.is_available()
     if not torch.cuda.is_available():
-        return {"cuda": False, "gpu": "", "torch_error": ""}
+        return {"cuda": False, "mps": mps_ok, "gpu": "", "torch_error": ""}
     try:
         gpu = torch.cuda.get_device_name(0)
     except Exception:
         gpu = ""
-    return {"cuda": True, "gpu": gpu, "torch_error": ""}
+    return {"cuda": True, "mps": mps_ok, "gpu": gpu, "torch_error": ""}
 
 
 class Jobs:
@@ -295,6 +457,7 @@ class Jobs:
         cuda = self._cuda
         return {
             "cuda": cuda["cuda"],
+            "mps": cuda["mps"],
             "gpu": cuda["gpu"],
             "torch_error": cuda["torch_error"],
             "embedding_dirs": embedding_dirs(),
@@ -464,6 +627,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/train":
                 cmd, kind = build_train(self.read_json())
                 self.send_json(200, self.server.jobs.start(kind, cmd))
+            elif path == "/api/pick":
+                self.send_json(200, pick_path(self.read_json()))
             elif path == "/api/stop":
                 stopped = self.server.jobs.stop()
                 snap = self.server.jobs.snapshot(0)

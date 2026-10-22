@@ -77,6 +77,8 @@
     }
     input:focus, select:focus { border-color: var(--mark); outline: none; }
     input:disabled, select:disabled { opacity: 0.55; }
+    input.pick { cursor: pointer; }
+    input.pick:disabled { cursor: default; }
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -156,7 +158,7 @@
   <main>
     <p class="eyebrow">Trainer</p>
     <h1>Extract and train</h1>
-    <p class="lede">Frozen CNN14 embeddings, then a linear probe. This page runs the same scripts as the command line. Paths are on this machine. One job runs at a time.</p>
+    <p class="lede">Frozen CNN14 embeddings, then a linear probe. This page runs the same scripts as the command line. Click a path field and choose it in Finder or File Explorer. One job runs at a time.</p>
 
     <div class="tabs" role="tablist">
       <button type="button" id="tab-extract" role="tab" aria-selected="true" aria-controls="extract">Extract</button>
@@ -166,18 +168,18 @@
     <form id="extract" class="panel" role="tabpanel">
       <div class="field">
         <label for="ex-manifests">Manifests</label>
-        <input id="ex-manifests" name="manifests" type="text" required placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
+        <input id="ex-manifests" name="manifests" class="pick" data-kind="any" data-title="Manifests" type="text" required readonly placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
         <p class="hint">A folder of envsound_{train,val,test}.csv, or one CSV.</p>
       </div>
       <div class="field">
         <label for="ex-audio">Audio root</label>
-        <input id="ex-audio" name="audio_root" type="text" placeholder="E:\Sounds for TA\Extracted" spellcheck="false">
+        <input id="ex-audio" name="audio_root" class="pick" data-kind="dir" data-title="Audio root" type="text" readonly placeholder="E:\Sounds for TA\Extracted" spellcheck="false">
         <p class="hint">Base for relative paths. Leave empty to use the parent of the manifests folder.</p>
       </div>
       <div class="grid">
         <div class="field">
           <label for="ex-out">Output folder</label>
-          <input id="ex-out" name="out" type="text" list="embedding-dirs" value="embeddings/panns_cnn14" spellcheck="false">
+          <input id="ex-out" name="out" class="pick" data-kind="dir" data-title="Output folder" type="text" readonly value="embeddings/panns_cnn14" spellcheck="false">
         </div>
         <div class="field">
           <label for="ex-device">Device</label>
@@ -197,7 +199,7 @@
         <summary>Advanced</summary>
         <div class="field">
           <label for="ex-checkpoint">Checkpoint</label>
-          <input id="ex-checkpoint" name="checkpoint" type="text" placeholder="models/Cnn14_mAP=0.431.pth" spellcheck="false">
+          <input id="ex-checkpoint" name="checkpoint" class="pick" data-kind="file" data-title="Checkpoint" type="text" readonly placeholder="models/Cnn14_mAP=0.431.pth" spellcheck="false">
           <p class="hint">Leave empty for models/Cnn14_mAP=0.431.pth. A missing file is downloaded there.</p>
         </div>
         <div class="grid">
@@ -220,7 +222,7 @@
         </label>
         <div class="field" id="combine-field" hidden>
           <label for="ex-combine-from">Combine from</label>
-          <input id="ex-combine-from" name="combine_from" type="text" list="embedding-dirs" spellcheck="false">
+          <input id="ex-combine-from" name="combine_from" class="pick" data-kind="dir" data-title="Combine from" type="text" readonly spellcheck="false">
         </div>
       </details>
       <button class="primary" id="extract-submit" type="submit">Extract embeddings</button>
@@ -229,7 +231,7 @@
     <form id="train" class="panel" role="tabpanel" hidden>
       <div class="field">
         <label for="tr-embeddings">Embeddings</label>
-        <input id="tr-embeddings" name="embeddings" type="text" list="embedding-dirs" value="embeddings/panns_cnn14" required spellcheck="false">
+        <input id="tr-embeddings" name="embeddings" class="pick" data-kind="dir" data-title="Embeddings" type="text" readonly value="embeddings/panns_cnn14" required spellcheck="false">
         <p class="hint">Folder that holds embeddings.npz. This is the extractor output.</p>
       </div>
       <div class="field">
@@ -242,21 +244,21 @@
       <div id="train-folder">
         <div class="field">
           <label for="tr-manifests">Manifests</label>
-          <input id="tr-manifests" name="manifests" type="text" required placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
+          <input id="tr-manifests" name="manifests" class="pick" data-kind="dir" data-title="Manifests" type="text" required readonly placeholder="E:\Sounds for TA\Extracted\manifests" spellcheck="false">
         </div>
       </div>
       <div id="train-files" hidden>
         <div class="field">
           <label for="tr-train">Training CSV</label>
-          <input id="tr-train" name="train" type="text" spellcheck="false">
+          <input id="tr-train" name="train" class="pick" data-kind="file" data-title="Training CSV" type="text" readonly spellcheck="false">
         </div>
         <div class="field">
           <label for="tr-eval">Validation CSV</label>
-          <input id="tr-eval" name="eval" type="text" spellcheck="false">
+          <input id="tr-eval" name="eval" class="pick" data-kind="file" data-title="Validation CSV" type="text" readonly spellcheck="false">
         </div>
         <div class="field">
           <label for="tr-test">Test CSV</label>
-          <input id="tr-test" name="test" type="text" spellcheck="false">
+          <input id="tr-test" name="test" class="pick" data-kind="file" data-title="Test CSV" type="text" readonly spellcheck="false">
         </div>
       </div>
       <div class="grid">
@@ -273,12 +275,13 @@
           <select id="tr-device" name="device">
             <option value="auto" selected>auto</option>
             <option value="cuda">cuda</option>
+            <option value="mps">mps</option>
             <option value="cpu">cpu</option>
           </select>
         </div>
         <div class="field">
           <label for="tr-out">Output folder</label>
-          <input id="tr-out" name="out" type="text" list="result-dirs" value="results/panns_cnn14_linear" spellcheck="false">
+          <input id="tr-out" name="out" class="pick" data-kind="dir" data-title="Output folder" type="text" readonly value="results/panns_cnn14_linear" spellcheck="false">
         </div>
         <div class="field">
           <label for="tr-seeds">Seeds</label>
@@ -438,6 +441,42 @@
       trainSubmit.textContent = trainForm.elements.dry_run.checked ? "Check labels" : "Train probe";
     }
 
+    const chooseNote = "Choose it in the window that opened.";
+    let picking = false;
+
+    async function pickPath(input) {
+      if (picking || input.disabled) return;
+      picking = true;
+      const marked = statusEl.textContent === "Idle";
+      if (marked) setStatus(chooseNote, "");
+      try {
+        const res = await fetch("/api/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: input.value.trim(),
+            kind: input.dataset.kind || "dir",
+            title: input.dataset.title || "Choose",
+          }),
+        });
+        const data = await readJson(res);
+        if (res.status === 409) {
+          setStatus(data.error || "A file window is already open.", "err");
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || "Could not open the file window.");
+        if (!data.cancelled) {
+          input.value = data.value || "";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        if (marked && statusEl.textContent === chooseNote) setStatus("Idle", "");
+      } catch (err) {
+        setStatus(err.message || "Could not open the file window.", "err");
+      } finally {
+        picking = false;
+      }
+    }
+
     function showTab(which) {
       const extract = which === "extract";
       extractForm.hidden = !extract;
@@ -552,6 +591,18 @@
       if (job.status === "running") pollTimer = setTimeout(poll, 400);
     }
 
+    document.querySelector("main").addEventListener("click", (event) => {
+      const input = event.target.closest("input.pick");
+      if (!input || input.disabled) return;
+      pickPath(input);
+    });
+    document.querySelector("main").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const input = event.target.closest("input.pick");
+      if (!input || input.disabled) return;
+      event.preventDefault();
+      pickPath(input);
+    });
     tabExtract.addEventListener("click", () => showTab("extract"));
     tabTrain.addEventListener("click", () => showTab("train"));
     extractForm.addEventListener("submit", (event) => {
@@ -598,6 +649,7 @@
       const bits = ["Runs extract_panns_embeddings.py and train_linear_probe.py."];
       if (info.torch_error) bits.push(info.torch_error);
       else if (info.cuda) bits.push("CUDA is available" + (info.gpu ? " · " + info.gpu : "") + ".");
+      else if (info.mps) bits.push("MPS is available. CUDA is not. A full extraction on CPU takes several hours.");
       else bits.push("CUDA is not available. A full extraction on CPU takes several hours.");
       foot.textContent = bits.join(" ");
     }).catch(() => {

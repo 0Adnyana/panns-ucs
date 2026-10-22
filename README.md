@@ -273,7 +273,7 @@ Under `--out/<task>/` (default `results/panns_cnn14_linear/<task>/`):
 | `--out` | `results/panns_cnn14_linear` | Results folder. Files land in `<--out>/<task>/`. |
 | `--task` | `subcategory` | `subcategory`, `category`, or `pair`. See [Tasks](#tasks). |
 | `--seeds` | `42,123,456,789,1024` | Comma-separated seeds. A seed that already has `metrics.json` is skipped. |
-| `--device` | `auto` | `auto`, `cuda`, or `cpu`. |
+| `--device` | `auto` | `auto`, `cuda`, `mps`, or `cpu`. `auto` uses CUDA, then MPS, then CPU. |
 | `--batch-size` | `256` | |
 | `--lr` | `1e-3` | AdamW learning rate. |
 | `--weight-decay` | `1e-3` | AdamW weight decay. |
@@ -334,8 +334,9 @@ in those files is in [evaluation checks](docs/results.md#evaluation).
 ### Web trainer
 
 `web/app.py` runs the extractor and the linear probe from one page on this
-machine. It starts those scripts and shows their output. Paths are folders on
-this machine, the same ones you would pass on the command line. One job runs
+machine. It starts those scripts and shows their output. Click a path field
+and choose the folder or file in Finder or File Explorer. The scripts receive
+the same paths they take on the command line. One job runs
 at a time. Stopping an extraction leaves `embeddings.partial.npz`, so the same
 settings continue it. The probe still skips a seed that already has
 `metrics.json`.
